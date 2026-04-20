@@ -10,7 +10,8 @@ const defaultProfile = {
 function createStore() {
   return {
     sessions: new Map(),
-    profiles: new Map([[defaultProfile.id, { ...defaultProfile }]])
+    profiles: new Map([[defaultProfile.id, { ...defaultProfile }]]),
+    medications: new Map()
   };
 }
 
@@ -19,7 +20,7 @@ function sendJson(res, statusCode, payload) {
     "content-type": "application/json",
     "access-control-allow-origin": "*",
     "access-control-allow-headers": "content-type, authorization",
-    "access-control-allow-methods": "GET, POST, PATCH, OPTIONS"
+    "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS"
   });
   res.end(JSON.stringify(payload));
 }
@@ -68,11 +69,69 @@ function getSessionProfile(req, store) {
   };
 }
 
+function normalizeMedicationInput(input, currentMedication) {
+  const name = String(input.name ?? currentMedication?.name ?? "").trim();
+  const dosage = String(input.dosage ?? currentMedication?.dosage ?? "").trim();
+  const type = String(input.type ?? currentMedication?.type ?? "tablet").trim();
+  const instructions = String(
+    input.instructions ?? currentMedication?.instructions ?? ""
+  ).trim();
+  const reason = String(input.reason ?? currentMedication?.reason ?? "").trim();
+  const startDate = String(
+    input.startDate ?? currentMedication?.startDate ?? ""
+  ).trim();
+  const endDate = String(input.endDate ?? currentMedication?.endDate ?? "").trim();
+
+  if (!name) {
+    return { error: "Medication name is required." };
+  }
+
+  if (!dosage) {
+    return { error: "Dosage is required." };
+  }
+
+  if (!startDate) {
+    return { error: "Start date is required." };
+  }
+
+  if (endDate && startDate > endDate) {
+    return { error: "End date must be on or after the start date." };
+  }
+
+  return {
+    name,
+    dosage,
+    type: type || "tablet",
+    instructions,
+    reason,
+    startDate,
+    endDate
+  };
+}
+
+function listUserMedications(store, userId, includeArchived) {
+  return [...store.medications.values()]
+    .filter((medication) => medication.userId === userId)
+    .filter((medication) => includeArchived || medication.status !== "archived")
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
+}
+
+function getMedicationForUser(store, userId, medicationId) {
+  const medication = store.medications.get(medicationId);
+
+  if (!medication || medication.userId !== userId) {
+    return null;
+  }
+
+  return medication;
+}
+
 export function createApp(options = {}) {
   const store = options.store ?? createStore();
 
   return async function app(req, res) {
     const url = new URL(req.url, "http://localhost");
+    const medicationMatch = url.pathname.match(/^\/api\/medications\/([^/]+)$/);
 
     if (req.method === "OPTIONS") {
       sendJson(res, 204, {});
@@ -87,7 +146,7 @@ export function createApp(options = {}) {
     if (req.method === "GET" && url.pathname === "/api/hello") {
       sendJson(res, 200, {
         message: "Hello from the medicine reminder backend",
-        milestone: 2
+        milestone: 3
       });
       return;
     }
@@ -150,6 +209,104 @@ export function createApp(options = {}) {
 
       sendJson(res, 200, { profile: nextProfile });
       return;
+    }
+
+    if (url.pathname.startsWith("/api/medications")) {
+      const session = getSessionProfile(req, store);
+
+      if (!session?.profile) {
+        sendJson(res, 401, { error: "Unauthorized" });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/medications") {
+        const includeArchived = url.searchParams.get("includeArchived") === "true";
+        const medications = listUserMedications(
+          store,
+          session.profile.id,
+          includeArchived
+        );
+
+        sendJson(res, 200, { medications });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/medications") {
+        const body = await readJson(req);
+        const normalized = normalizeMedicationInput(body);
+
+        if ("error" in normalized) {
+          sendJson(res, 400, { error: normalized.error });
+          return;
+        }
+
+        const now = new Date().toISOString();
+        const medication = {
+          id: randomUUID(),
+          userId: session.profile.id,
+          ...normalized,
+          status: "active",
+          createdAt: now,
+          updatedAt: now,
+          archivedAt: null
+        };
+
+        store.medications.set(medication.id, medication);
+
+        sendJson(res, 201, { medication });
+        return;
+      }
+
+      if (medicationMatch) {
+        const medication = getMedicationForUser(
+          store,
+          session.profile.id,
+          medicationMatch[1]
+        );
+
+        if (!medication) {
+          sendJson(res, 404, { error: "Medication not found." });
+          return;
+        }
+
+        if (req.method === "GET") {
+          sendJson(res, 200, { medication });
+          return;
+        }
+
+        if (req.method === "PATCH") {
+          const body = await readJson(req);
+          const normalized = normalizeMedicationInput(body, medication);
+
+          if ("error" in normalized) {
+            sendJson(res, 400, { error: normalized.error });
+            return;
+          }
+
+          const nextMedication = {
+            ...medication,
+            ...normalized,
+            updatedAt: new Date().toISOString()
+          };
+
+          store.medications.set(nextMedication.id, nextMedication);
+          sendJson(res, 200, { medication: nextMedication });
+          return;
+        }
+
+        if (req.method === "DELETE") {
+          const nextMedication = {
+            ...medication,
+            status: "archived",
+            archivedAt: new Date().toISOString(),
+            updatedAt: new Date().toISOString()
+          };
+
+          store.medications.set(nextMedication.id, nextMedication);
+          sendJson(res, 200, { medication: nextMedication });
+          return;
+        }
+      }
     }
 
     sendJson(res, 404, { error: "Not found" });
