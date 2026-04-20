@@ -1,0 +1,244 @@
+:root {
+  font-family: "Segoe UI", Tahoma, Geneva, Verdana, sans-serif;
+  color: #14323f;
+  background:
+    radial-gradient(circle at top left, rgba(255, 223, 186, 0.55), transparent 32%),
+    linear-gradient(180deg, #f8f2e7 0%, #eef7f9 100%);
+  line-height: 1.5;
+  font-weight: 400;
+}
+
+* {
+  box-sizing: border-box;
+}
+
+body {
+  margin: 0;
+  min-width: 320px;
+  min-height: 100vh;
+}
+
+#root {
+  min-height: 100vh;
+}
+
+button,
+input {
+  font: inherit;
+}
+
+.app-shell {
+  max-width: 1080px;
+  margin: 0 auto;
+  padding: 48px 20px 64px;
+}
+
+.hero {
+  margin-bottom: 24px;
+}
+
+.eyebrow {
+  margin: 0 0 8px;
+  color: #8c5a2b;
+  font-size: 0.9rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+}
+
+.hero h1 {
+  margin: 0;
+  font-size: clamp(2rem, 4vw, 3.5rem);
+}
+
+.subtitle {
+  max-width: 60ch;
+  margin-top: 12px;
+  color: #49616b;
+}
+
+.alert {
+  margin: 0 0 16px;
+  padding: 14px 16px;
+  border-radius: 14px;
+}
+
+.alert.info {
+  background: rgba(221, 238, 242, 0.92);
+  color: #245362;
+}
+
+.alert.error {
+  background: rgba(255, 228, 225, 0.96);
+  color: #8c2f28;
+}
+
+.status-grid,
+.content-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.status-grid {
+  grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-bottom: 24px;
+}
+
+.content-grid {
+  grid-template-columns: 1.1fr 0.9fr;
+}
+
+.stat-card,
+.panel {
+  border: 1px solid rgba(20, 50, 63, 0.12);
+  border-radius: 20px;
+  background: rgba(255, 255, 255, 0.84);
+  box-shadow: 0 18px 40px rgba(20, 50, 63, 0.08);
+}
+
+.stat-card {
+  padding: 20px;
+}
+
+.stat-label {
+  display: block;
+  color: #5a6f76;
+  font-size: 0.95rem;
+}
+
+.stat-value {
+  display: block;
+  margin-top: 8px;
+  font-size: 2rem;
+}
+
+.stat-value.compact {
+  font-size: 1.35rem;
+}
+
+.panel {
+  padding: 24px;
+}
+
+.auth-panel {
+  max-width: 620px;
+}
+
+.panel-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  margin-bottom: 16px;
+}
+
+.panel-header h2 {
+  margin: 0;
+}
+
+.panel-badge {
+  padding: 6px 10px;
+  border-radius: 999px;
+  background: #dff0f4;
+  color: #215769;
+  font-size: 0.85rem;
+  font-weight: 700;
+}
+
+.form-grid {
+  display: grid;
+  gap: 16px;
+}
+
+.form-grid label {
+  display: grid;
+  gap: 8px;
+  color: #2f4b55;
+  font-weight: 600;
+}
+
+.form-grid input {
+  width: 100%;
+  padding: 12px 14px;
+  border: 1px solid #bfd4da;
+  border-radius: 12px;
+  background: #fcfeff;
+}
+
+.primary-button,
+.secondary-button {
+  padding: 12px 16px;
+  border-radius: 12px;
+  border: none;
+  cursor: pointer;
+  transition: transform 120ms ease, opacity 120ms ease;
+}
+
+.primary-button:hover,
+.secondary-button:hover {
+  transform: translateY(-1px);
+}
+
+.primary-button {
+  background: #1d7a8c;
+  color: #fff;
+  font-weight: 700;
+}
+
+.secondary-button {
+  background: #edf5f7;
+  color: #215769;
+  font-weight: 700;
+}
+
+.dose-list {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+  display: grid;
+  gap: 12px;
+}
+
+.dose-item {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px;
+  border-radius: 16px;
+  background: #f6fbfc;
+}
+
+.dose-item h3,
+.dose-item p {
+  margin: 0;
+}
+
+.dose-item p,
+.dose-item time,
+.footer-note {
+  color: #5a6f76;
+}
+
+.footer-note {
+  margin-top: 20px;
+  font-size: 0.95rem;
+}
+
+@media (max-width: 820px) {
+  .content-grid {
+    grid-template-columns: 1fr;
+  }
+}
+
+@media (max-width: 640px) {
+  .app-shell {
+    padding: 32px 16px 48px;
+  }
+
+  .dose-item,
+  .panel-header {
+    align-items: flex-start;
+    flex-direction: column;
+  }
+}

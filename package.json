@@ -1,0 +1,15 @@
+{
+  "name": "medicine-reminder-app",
+  "private": true,
+  "version": "0.1.0",
+  "workspaces": [
+    "apps/frontend",
+    "apps/backend"
+  ],
+  "scripts": {
+    "dev:frontend": "npm run dev --workspace frontend",
+    "dev:backend": "npm run dev --workspace backend",
+    "build": "npm run build --workspace frontend && npm run build --workspace backend",
+    "test": "npm run test --workspace frontend && npm run test --workspace backend"
+  }
+}
