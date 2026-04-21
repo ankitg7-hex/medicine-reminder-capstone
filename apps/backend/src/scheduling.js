@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 
 const weekdayKeys = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"];
 const recurrenceTypes = new Set(["daily", "selected-weekdays"]);
+const doseActionStatuses = new Set(["completed", "missed", "skipped"]);
 const windowDays = 7;
 
 function parseDateParts(value) {
@@ -139,6 +140,25 @@ function shouldGenerateForDate(schedule, dateString) {
 
 function normalizeString(value) {
   return String(value || "").trim();
+}
+
+function buildDoseSummary(profile, medication, doseEvent) {
+  const scheduledDate = formatDateInTimeZone(new Date(doseEvent.scheduledAt), profile.timezone);
+
+  return {
+    id: doseEvent.id,
+    medicationId: medication.id,
+    medicationName: medication.name,
+    dosage: medication.dosage,
+    instructions: medication.instructions,
+    reason: medication.reason,
+    scheduledAt: doseEvent.scheduledAt,
+    scheduledDate,
+    scheduledTime: formatDisplayTime(new Date(doseEvent.scheduledAt), profile.timezone),
+    status: doseEvent.status,
+    actionTakenAt: doseEvent.actionTakenAt,
+    notes: doseEvent.notes ?? null
+  };
 }
 
 export function validateMedicationPayload(payload) {
@@ -345,6 +365,79 @@ export function buildMedicationResponse(store, medicationId) {
   };
 }
 
+export function getDoseEventForUser(store, userId, doseEventId) {
+  const doseEvent = store.doseEvents.get(doseEventId);
+
+  if (!doseEvent || doseEvent.userId !== userId) {
+    return null;
+  }
+
+  return doseEvent;
+}
+
+export function applyDoseAction(store, profile, doseEventId, payload, now = new Date()) {
+  const doseEvent = getDoseEventForUser(store, profile.id, doseEventId);
+
+  if (!doseEvent) {
+    return {
+      ok: false,
+      statusCode: 404,
+      body: { error: "Dose event not found." }
+    };
+  }
+
+  const medication = store.medications.get(doseEvent.medicationId);
+
+  if (!medication || medication.userId !== profile.id) {
+    return {
+      ok: false,
+      statusCode: 404,
+      body: { error: "Dose event not found." }
+    };
+  }
+
+  const nextStatus = normalizeString(payload.status).toLowerCase();
+
+  if (!doseActionStatuses.has(nextStatus)) {
+    return {
+      ok: false,
+      statusCode: 400,
+      body: {
+        error: "Validation failed",
+        details: ["Dose status must be completed, missed, or skipped."]
+      }
+    };
+  }
+
+  const timestamp = now.toISOString();
+  const notes = normalizeString(payload.notes);
+  const nextDoseEvent = {
+    ...doseEvent,
+    status: nextStatus,
+    actionTakenAt: timestamp,
+    notes: notes || null,
+    history: [
+      ...(doseEvent.history ?? []),
+      {
+        status: nextStatus,
+        recordedAt: timestamp,
+        notes: notes || null,
+        source: "dose-action-api"
+      }
+    ]
+  };
+
+  store.doseEvents.set(nextDoseEvent.id, nextDoseEvent);
+
+  return {
+    ok: true,
+    statusCode: 200,
+    body: {
+      dose: buildDoseSummary(profile, medication, nextDoseEvent)
+    }
+  };
+}
+
 export function buildTodayScheduleResponse(store, profile, now = new Date()) {
   generateDoseEventsForProfile(store, profile, now);
 
@@ -353,7 +446,8 @@ export function buildTodayScheduleResponse(store, profile, now = new Date()) {
     dueNow: [],
     upcoming: [],
     completed: [],
-    missed: []
+    missed: [],
+    skipped: []
   };
 
   for (const doseEvent of store.doseEvents.values()) {
@@ -371,17 +465,7 @@ export function buildTodayScheduleResponse(store, profile, now = new Date()) {
       continue;
     }
 
-    const doseSummary = {
-      id: doseEvent.id,
-      medicationId: medication.id,
-      medicationName: medication.name,
-      dosage: medication.dosage,
-      instructions: medication.instructions,
-      reason: medication.reason,
-      scheduledAt: doseEvent.scheduledAt,
-      scheduledTime: formatDisplayTime(new Date(doseEvent.scheduledAt), profile.timezone),
-      status: doseEvent.status
-    };
+    const doseSummary = buildDoseSummary(profile, medication, doseEvent);
 
     if (doseEvent.status === "completed") {
       groups.completed.push(doseSummary);
@@ -390,6 +474,11 @@ export function buildTodayScheduleResponse(store, profile, now = new Date()) {
 
     if (doseEvent.status === "missed") {
       groups.missed.push(doseSummary);
+      continue;
+    }
+
+    if (doseEvent.status === "skipped") {
+      groups.skipped.push(doseSummary);
       continue;
     }
 
@@ -413,8 +502,67 @@ export function buildTodayScheduleResponse(store, profile, now = new Date()) {
       upcoming: groups.upcoming.length,
       completed: groups.completed.length,
       missed: groups.missed.length,
+      skipped: groups.skipped.length,
       total: Object.values(groups).reduce((count, entries) => count + entries.length, 0)
     },
     groups
+  };
+}
+
+export function buildHistoryResponse(store, profile, filters = {}) {
+  const medicationFilter = normalizeString(filters.medicationId);
+  const statusFilter = normalizeString(filters.status).toLowerCase();
+  const fromDate = normalizeString(filters.from);
+  const toDate = normalizeString(filters.to);
+  const entries = [];
+
+  for (const doseEvent of store.doseEvents.values()) {
+    if (doseEvent.userId !== profile.id || doseEvent.status === "pending") {
+      continue;
+    }
+
+    const medication = store.medications.get(doseEvent.medicationId);
+
+    if (!medication || medication.userId !== profile.id) {
+      continue;
+    }
+
+    const entry = buildDoseSummary(profile, medication, doseEvent);
+
+    if (medicationFilter && entry.medicationId !== medicationFilter) {
+      continue;
+    }
+
+    if (statusFilter && statusFilter !== "all" && entry.status !== statusFilter) {
+      continue;
+    }
+
+    if (fromDate && entry.scheduledDate < fromDate) {
+      continue;
+    }
+
+    if (toDate && entry.scheduledDate > toDate) {
+      continue;
+    }
+
+    entries.push(entry);
+  }
+
+  entries.sort((left, right) => right.scheduledAt.localeCompare(left.scheduledAt));
+
+  return {
+    filters: {
+      medicationId: medicationFilter || "all",
+      status: statusFilter || "all",
+      from: fromDate || "",
+      to: toDate || ""
+    },
+    summary: {
+      completed: entries.filter((entry) => entry.status === "completed").length,
+      missed: entries.filter((entry) => entry.status === "missed").length,
+      skipped: entries.filter((entry) => entry.status === "skipped").length,
+      total: entries.length
+    },
+    history: entries
   };
 }

@@ -1,8 +1,11 @@
 import { randomUUID } from "node:crypto";
 import {
+  applyDoseAction,
+  buildHistoryResponse,
   buildMedicationResponse,
   buildTodayScheduleResponse,
   generateDoseEventsForProfile,
+  getDoseEventForUser,
   resetDoseEventsForMedication,
   resetDoseEventsForUser,
   validateMedicationPayload
@@ -121,6 +124,15 @@ function getScheduleForMedication(store, medicationId) {
   return scheduleId ? store.schedules.get(scheduleId) ?? null : null;
 }
 
+function buildHistoryFilters(url) {
+  return {
+    medicationId: url.searchParams.get("medicationId") ?? "",
+    status: url.searchParams.get("status") ?? "",
+    from: url.searchParams.get("from") ?? "",
+    to: url.searchParams.get("to") ?? ""
+  };
+}
+
 function listMedicationResponses(store, userId, includeArchived = false) {
   return [...store.medications.values()]
     .filter((medication) => medication.userId === userId)
@@ -184,6 +196,7 @@ export function createApp(options = {}) {
   return async function app(req, res) {
     const url = new URL(req.url, "http://localhost");
     const medicationMatch = /^\/api\/medications\/([^/]+)$/.exec(url.pathname);
+    const doseMatch = /^\/api\/doses\/([^/]+)$/.exec(url.pathname);
 
     if (req.method === "OPTIONS") {
       sendJson(res, 204, {});
@@ -466,6 +479,40 @@ export function createApp(options = {}) {
       }
 
       sendJson(res, 200, buildTodayScheduleResponse(store, session.profile));
+      return;
+    }
+
+    if (req.method === "PATCH" && doseMatch) {
+      const session = getSessionProfile(req, store);
+
+      if (!session?.profile) {
+        sendJson(res, 401, { error: "Unauthorized" });
+        return;
+      }
+
+      const doseEvent = getDoseEventForUser(store, session.profile.id, doseMatch[1]);
+
+      if (!doseEvent) {
+        sendJson(res, 404, { error: "Dose event not found." });
+        return;
+      }
+
+      const body = await readJson(req);
+      const result = applyDoseAction(store, session.profile, doseEvent.id, body);
+
+      sendJson(res, result.statusCode, result.body);
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/history") {
+      const session = getSessionProfile(req, store);
+
+      if (!session?.profile) {
+        sendJson(res, 401, { error: "Unauthorized" });
+        return;
+      }
+
+      sendJson(res, 200, buildHistoryResponse(store, session.profile, buildHistoryFilters(url)));
       return;
     }
 

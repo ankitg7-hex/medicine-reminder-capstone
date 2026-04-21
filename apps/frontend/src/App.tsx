@@ -36,6 +36,10 @@ type Medication = {
   schedule: MedicationSchedule;
 };
 
+type DoseActionStatus = "completed" | "missed" | "skipped";
+type ScheduleGroupKey = "dueNow" | "upcoming" | "completed" | "missed" | "skipped";
+type HistoryStatusFilter = DoseActionStatus | "all";
+
 type DoseEntry = {
   id: string;
   medicationId: string;
@@ -44,17 +48,28 @@ type DoseEntry = {
   instructions: string;
   reason: string;
   scheduledAt: string;
+  scheduledDate: string;
   scheduledTime: string;
   status: string;
+  actionTakenAt: string | null;
+  notes: string | null;
 };
-
-type ScheduleGroupKey = "dueNow" | "upcoming" | "completed" | "missed";
 
 type ScheduleResponse = {
   date: string;
   timezone: string;
   summary: Record<ScheduleGroupKey | "total", number>;
   groups: Record<ScheduleGroupKey, DoseEntry[]>;
+};
+
+type HistoryResponse = {
+  summary: Record<DoseActionStatus | "total", number>;
+  history: DoseEntry[];
+};
+
+type HistoryFilters = {
+  medicationId: string;
+  status: HistoryStatusFilter;
 };
 
 type MedicationFormState = {
@@ -92,23 +107,45 @@ const scheduleGroupMeta: Array<{
   {
     key: "dueNow",
     title: "Due now",
-    description: "Doses scheduled for now or already overdue."
+    description: "Take action on doses that are due or slightly overdue."
   },
   {
     key: "upcoming",
     title: "Upcoming",
-    description: "Later today so the next doses are easy to scan."
+    description: "Preview the rest of today so nothing sneaks up on you."
   },
   {
     key: "completed",
-    title: "Completed",
-    description: "Ready for milestone 5 dose actions."
+    title: "Taken",
+    description: "Completed doses stay visible for a quick confidence check."
   },
   {
     key: "missed",
     title: "Missed",
-    description: "Held for future adherence tracking."
+    description: "Missed items stay visible so they are easy to review later."
+  },
+  {
+    key: "skipped",
+    title: "Skipped",
+    description: "Use skip when the dose was intentionally not taken."
   }
+];
+
+const doseActionOptions: Array<{
+  status: DoseActionStatus;
+  label: string;
+  className: string;
+}> = [
+  { status: "completed", label: "Mark taken", className: "dose-action-positive" },
+  { status: "skipped", label: "Skip", className: "dose-action-neutral" },
+  { status: "missed", label: "Missed", className: "dose-action-warning" }
+];
+
+const historyStatusOptions: Array<{ value: HistoryStatusFilter; label: string }> = [
+  { value: "all", label: "All outcomes" },
+  { value: "completed", label: "Taken" },
+  { value: "missed", label: "Missed" },
+  { value: "skipped", label: "Skipped" }
 ];
 
 const medicineCatalog = [
@@ -220,6 +257,18 @@ function createDefaultMedicationForm(): MedicationFormState {
   };
 }
 
+function createEmptyHistory(): HistoryResponse {
+  return {
+    summary: {
+      completed: 0,
+      missed: 0,
+      skipped: 0,
+      total: 0
+    },
+    history: []
+  };
+}
+
 async function apiRequest<T>(
   path: string,
   options: RequestInit = {},
@@ -268,6 +317,155 @@ function summarizeSchedule(medication: Medication) {
   return `${weekdayLabel} at ${timeLabel}`;
 }
 
+function buildHistoryPath(filters: HistoryFilters) {
+  const params = new URLSearchParams();
+
+  if (filters.medicationId !== "all") {
+    params.set("medicationId", filters.medicationId);
+  }
+
+  if (filters.status !== "all") {
+    params.set("status", filters.status);
+  }
+
+  const query = params.toString();
+  return query ? `/api/history?${query}` : "/api/history";
+}
+
+function getDoseActionGroup(status: DoseActionStatus): Extract<
+  ScheduleGroupKey,
+  "completed" | "missed" | "skipped"
+> {
+  if (status === "completed") {
+    return "completed";
+  }
+
+  if (status === "missed") {
+    return "missed";
+  }
+
+  return "skipped";
+}
+
+function sortDoseEntries(entries: DoseEntry[]) {
+  return [...entries].sort((left, right) => left.scheduledAt.localeCompare(right.scheduledAt));
+}
+
+function buildScheduleSummary(groups: Record<ScheduleGroupKey, DoseEntry[]>) {
+  return {
+    dueNow: groups.dueNow.length,
+    upcoming: groups.upcoming.length,
+    completed: groups.completed.length,
+    missed: groups.missed.length,
+    skipped: groups.skipped.length,
+    total: Object.values(groups).reduce((count, entries) => count + entries.length, 0)
+  };
+}
+
+function applyDoseActionToSchedule(
+  current: ScheduleResponse,
+  existingEntry: DoseEntry,
+  nextStatus: DoseActionStatus,
+  actionTakenAt: string
+) {
+  const groups: Record<ScheduleGroupKey, DoseEntry[]> = {
+    dueNow: current.groups.dueNow.filter((entry) => entry.id !== existingEntry.id),
+    upcoming: current.groups.upcoming.filter((entry) => entry.id !== existingEntry.id),
+    completed: current.groups.completed.filter((entry) => entry.id !== existingEntry.id),
+    missed: current.groups.missed.filter((entry) => entry.id !== existingEntry.id),
+    skipped: current.groups.skipped.filter((entry) => entry.id !== existingEntry.id)
+  };
+  const nextEntry = {
+    ...existingEntry,
+    status: nextStatus,
+    actionTakenAt
+  };
+  const targetGroup = getDoseActionGroup(nextStatus);
+
+  groups[targetGroup] = sortDoseEntries([...groups[targetGroup], nextEntry]);
+
+  return {
+    ...current,
+    groups,
+    summary: buildScheduleSummary(groups)
+  };
+}
+
+function applyDoseActionToHistory(
+  current: HistoryResponse | null,
+  existingEntry: DoseEntry,
+  nextStatus: DoseActionStatus,
+  actionTakenAt: string
+) {
+  const nextEntry = {
+    ...existingEntry,
+    status: nextStatus,
+    actionTakenAt
+  };
+  const nextHistory = [
+    nextEntry,
+    ...(current?.history ?? []).filter((entry) => entry.id !== nextEntry.id)
+  ].sort((left, right) => right.scheduledAt.localeCompare(left.scheduledAt));
+
+  return {
+    summary: {
+      completed: nextHistory.filter((entry) => entry.status === "completed").length,
+      missed: nextHistory.filter((entry) => entry.status === "missed").length,
+      skipped: nextHistory.filter((entry) => entry.status === "skipped").length,
+      total: nextHistory.length
+    },
+    history: nextHistory
+  };
+}
+
+function findDoseEntry(schedule: ScheduleResponse | null, doseId: string) {
+  if (!schedule) {
+    return null;
+  }
+
+  for (const group of Object.values(schedule.groups)) {
+    const match = group.find((entry) => entry.id === doseId);
+
+    if (match) {
+      return match;
+    }
+  }
+
+  return null;
+}
+
+function formatStatusLabel(status: string) {
+  if (status === "completed") {
+    return "Taken";
+  }
+
+  return status.charAt(0).toUpperCase() + status.slice(1);
+}
+
+function formatActionTime(value: string | null) {
+  if (!value) {
+    return "Awaiting action";
+  }
+
+  return new Intl.DateTimeFormat("en-US", {
+    hour: "numeric",
+    minute: "2-digit",
+    month: "short",
+    day: "numeric"
+  }).format(new Date(value));
+}
+
+function groupHistoryEntries(entries: DoseEntry[]) {
+  return Object.entries(
+    entries.reduce<Record<string, DoseEntry[]>>((groups, entry) => {
+      groups[entry.scheduledDate] = groups[entry.scheduledDate]
+        ? [...groups[entry.scheduledDate], entry]
+        : [entry];
+      return groups;
+    }, {})
+  );
+}
+
 export function App() {
   const [token, setToken] = useState<string | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -277,6 +475,11 @@ export function App() {
   const [medicationError, setMedicationError] = useState<string | null>(null);
   const [isWorkspaceLoading, setIsWorkspaceLoading] = useState(false);
   const [editingMedicationId, setEditingMedicationId] = useState<string | null>(null);
+  const [historyFilters, setHistoryFilters] = useState<HistoryFilters>({
+    medicationId: "all",
+    status: "all"
+  });
+  const [pendingDoseActionIds, setPendingDoseActionIds] = useState<string[]>([]);
   const [loginForm, setLoginForm] = useState({
     fullName: "Ananya Rao",
     email: "ananya@example.com",
@@ -292,16 +495,20 @@ export function App() {
   );
   const [medications, setMedications] = useState<Medication[]>([]);
   const [schedule, setSchedule] = useState<ScheduleResponse | null>(null);
+  const [history, setHistory] = useState<HistoryResponse>(createEmptyHistory());
 
-  const medicineSuggestions = medicineCatalog.filter((medicine) =>
-    medicine.name.toLowerCase().includes(medicationForm.name.trim().toLowerCase())
-  );
+  const medicineSuggestions = medicationForm.name.trim()
+    ? medicineCatalog.filter((medicine) =>
+        medicine.name.toLowerCase().includes(medicationForm.name.trim().toLowerCase())
+      )
+    : medicineCatalog.slice(0, 6);
+  const historyGroups = groupHistoryEntries(history.history);
 
   useEffect(() => {
     const savedToken = window.localStorage.getItem(sessionStorageKey);
 
     if (!savedToken) {
-      setStatus("Sign in with a demo profile to set up medication schedules.");
+      setStatus("Sign in with a demo profile to manage today's doses and review history.");
       return;
     }
 
@@ -325,8 +532,8 @@ export function App() {
       return;
     }
 
-    void loadWorkspace(token);
-  }, [token, profile]);
+    void loadWorkspace(token, historyFilters);
+  }, [token, profile, historyFilters]);
 
   async function loadProfile(nextToken: string) {
     try {
@@ -341,7 +548,7 @@ export function App() {
       window.localStorage.removeItem(sessionStorageKey);
       setToken(null);
       setProfile(null);
-      setStatus("Sign in with a demo profile to set up medication schedules.");
+      setStatus("Sign in with a demo profile to manage today's doses and review history.");
       setError(
         requestError instanceof Error
           ? requestError.message
@@ -350,18 +557,20 @@ export function App() {
     }
   }
 
-  async function loadWorkspace(nextToken: string) {
+  async function loadWorkspace(nextToken: string, nextFilters: HistoryFilters) {
     try {
       setWorkspaceError(null);
       setIsWorkspaceLoading(true);
 
-      const [medicationsResponse, scheduleResponse] = await Promise.all([
+      const [medicationsResponse, scheduleResponse, historyResponse] = await Promise.all([
         apiRequest<{ medications: Medication[] }>("/api/medications", {}, nextToken),
-        apiRequest<ScheduleResponse>("/api/schedule/today", {}, nextToken)
+        apiRequest<ScheduleResponse>("/api/schedule/today", {}, nextToken),
+        apiRequest<HistoryResponse>(buildHistoryPath(nextFilters), {}, nextToken)
       ]);
 
       setMedications(medicationsResponse.medications);
       setSchedule(scheduleResponse);
+      setHistory(historyResponse);
     } catch (requestError) {
       setWorkspaceError(
         requestError instanceof Error
@@ -390,10 +599,8 @@ export function App() {
       setProfile(response.profile);
       setStatus("Signed in");
     } catch (requestError) {
-      setError(
-        requestError instanceof Error ? requestError.message : "Demo login failed."
-      );
-      setStatus("Sign in with a demo profile to set up medication schedules.");
+      setError(requestError instanceof Error ? requestError.message : "Demo login failed.");
+      setStatus("Sign in with a demo profile to manage today's doses and review history.");
     }
   }
 
@@ -420,9 +627,7 @@ export function App() {
       setProfile(response.profile);
       setStatus("Profile updated");
     } catch (requestError) {
-      setError(
-        requestError instanceof Error ? requestError.message : "Could not save profile."
-      );
+      setError(requestError instanceof Error ? requestError.message : "Could not save profile.");
       setStatus("Signed in");
     }
   }
@@ -444,6 +649,7 @@ export function App() {
       setMedicationError(null);
       setStatus(editingMedicationId ? "Updating medication..." : "Saving medication...");
 
+      const isEditing = Boolean(editingMedicationId);
       const payload = {
         ...medicationForm,
         endDate: medicationForm.endDate || null,
@@ -469,13 +675,11 @@ export function App() {
       );
 
       resetMedicationEditor();
-      await loadWorkspace(token);
-      setStatus(editingMedicationId ? "Medication updated" : "Medication saved");
+      await loadWorkspace(token, historyFilters);
+      setStatus(isEditing ? "Medication updated" : "Medication saved");
     } catch (requestError) {
       setMedicationError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Could not save the medication."
+        requestError instanceof Error ? requestError.message : "Could not save the medication."
       );
       setStatus("Signed in");
     }
@@ -499,15 +703,76 @@ export function App() {
       );
 
       resetMedicationEditor();
-      await loadWorkspace(token);
+      await loadWorkspace(token, historyFilters);
       setStatus("Medication archived");
     } catch (requestError) {
       setMedicationError(
-        requestError instanceof Error
-          ? requestError.message
-          : "Could not archive the medication."
+        requestError instanceof Error ? requestError.message : "Could not archive the medication."
       );
       setStatus("Signed in");
+    }
+  }
+
+  async function handleDoseAction(doseId: string, nextStatus: DoseActionStatus) {
+    if (!token || pendingDoseActionIds.includes(doseId)) {
+      return;
+    }
+
+    const existingEntry = findDoseEntry(schedule, doseId);
+
+    if (!existingEntry) {
+      return;
+    }
+
+    const previousSchedule = schedule;
+    const previousHistory = history;
+    const actionTakenAt = new Date().toISOString();
+
+    setPendingDoseActionIds((current) => [...current, doseId]);
+    setStatus(
+      nextStatus === "completed"
+        ? "Recording dose as taken..."
+        : nextStatus === "missed"
+          ? "Recording dose as missed..."
+          : "Recording skipped dose..."
+    );
+    setWorkspaceError(null);
+    setSchedule((current) =>
+      current ? applyDoseActionToSchedule(current, existingEntry, nextStatus, actionTakenAt) : current
+    );
+    setHistory((current) =>
+      applyDoseActionToHistory(current, existingEntry, nextStatus, actionTakenAt)
+    );
+
+    try {
+      await apiRequest<{ dose: DoseEntry }>(
+        `/api/doses/${doseId}`,
+        {
+          method: "PATCH",
+          body: JSON.stringify({
+            status: nextStatus
+          })
+        },
+        token
+      );
+
+      await loadWorkspace(token, historyFilters);
+      setStatus(
+        nextStatus === "completed"
+          ? "Dose marked as taken"
+          : nextStatus === "missed"
+            ? "Dose marked as missed"
+            : "Dose marked as skipped"
+      );
+    } catch (requestError) {
+      setSchedule(previousSchedule);
+      setHistory(previousHistory);
+      setWorkspaceError(
+        requestError instanceof Error ? requestError.message : "Could not update the dose."
+      );
+      setStatus("Signed in");
+    } finally {
+      setPendingDoseActionIds((current) => current.filter((id) => id !== doseId));
     }
   }
 
@@ -542,15 +807,13 @@ export function App() {
     setMedicationForm((current) => ({
       ...current,
       name,
-      dosage:
-        matchedMedicine && !current.dosage ? matchedMedicine.dosage : current.dosage,
+      dosage: matchedMedicine && !current.dosage ? matchedMedicine.dosage : current.dosage,
       type: matchedMedicine ? matchedMedicine.type : current.type,
       instructions:
         matchedMedicine && !current.instructions
           ? matchedMedicine.instructions
           : current.instructions,
-      reason:
-        matchedMedicine && !current.reason ? matchedMedicine.reason : current.reason
+      reason: matchedMedicine && !current.reason ? matchedMedicine.reason : current.reason
     }));
   }
 
@@ -608,29 +871,35 @@ export function App() {
     setProfile(null);
     setMedications([]);
     setSchedule(null);
+    setHistory(createEmptyHistory());
     setEditingMedicationId(null);
     setMedicationForm(createDefaultMedicationForm());
+    setHistoryFilters({
+      medicationId: "all",
+      status: "all"
+    });
+    setPendingDoseActionIds([]);
     setError(null);
     setWorkspaceError(null);
     setMedicationError(null);
-    setStatus("Sign in with a demo profile to set up medication schedules.");
+    setStatus("Sign in with a demo profile to manage today's doses and review history.");
   }
 
   return (
     <main className="app-shell">
       <section className="hero">
         <div className="hero-copy">
-          <p className="eyebrow">Milestone 4</p>
-          <h1>Medicine Scheduling And Today&apos;s Dose Board</h1>
+          <p className="eyebrow">Milestone 5</p>
+          <h1>Dose Actions, Daily Signals, And Adherence History</h1>
           <p className="subtitle">
-            Create daily or selected-weekday reminder plans, save multiple dose
-            times, and preview today&apos;s schedule in one place.
+            Mark doses as taken, missed, or skipped right from today&apos;s board, then
+            review a clean medication history without leaving the workspace.
           </p>
         </div>
 
         <div className="hero-chip">
-          <span>Rolling 7-day generation</span>
-          <strong>Timezone-aware</strong>
+          <span>One-tap outcomes</span>
+          <strong>History ready</strong>
         </div>
       </section>
 
@@ -707,12 +976,16 @@ export function App() {
               <strong className="stat-value">{schedule?.summary.upcoming ?? 0}</strong>
             </article>
             <article className="stat-card">
-              <span className="stat-label">Medication plans</span>
-              <strong className="stat-value">{medications.length}</strong>
+              <span className="stat-label">Taken today</span>
+              <strong className="stat-value">{schedule?.summary.completed ?? 0}</strong>
             </article>
             <article className="stat-card">
-              <span className="stat-label">Timezone</span>
-              <strong className="stat-value compact">{profile.timezone}</strong>
+              <span className="stat-label">Missed today</span>
+              <strong className="stat-value">{schedule?.summary.missed ?? 0}</strong>
+            </article>
+            <article className="stat-card">
+              <span className="stat-label">History entries</span>
+              <strong className="stat-value">{history.summary.total}</strong>
             </article>
           </section>
 
@@ -722,8 +995,8 @@ export function App() {
                 <div>
                   <h2>{editingMedicationId ? "Edit Medication" : "Add Medication"}</h2>
                   <p className="panel-copy">
-                    Set treatment dates, recurrence, and one or more daily reminder
-                    times.
+                    Keep treatment plans current so today&apos;s board and history stay
+                    trustworthy.
                   </p>
                 </div>
                 {editingMedicationId ? (
@@ -986,7 +1259,7 @@ export function App() {
                   <div>
                     <h2>Saved Medication Plans</h2>
                     <p className="panel-copy">
-                      Edit a plan to regenerate the next seven days of doses.
+                      Edit a plan to regenerate the rolling dose window.
                     </p>
                   </div>
                   <span className="panel-badge">{medications.length} active</span>
@@ -1114,6 +1387,7 @@ export function App() {
               <div className="schedule-board">
                 {scheduleGroupMeta.map((group) => {
                   const entries = schedule?.groups[group.key] ?? [];
+                  const isActionable = group.key === "dueNow" || group.key === "upcoming";
 
                   return (
                     <section className="schedule-column" key={group.key}>
@@ -1131,16 +1405,46 @@ export function App() {
                         </div>
                       ) : (
                         <ul className="dose-list">
-                          {entries.map((entry) => (
-                            <li className="dose-item" key={entry.id}>
-                              <div>
-                                <h4>{entry.medicationName}</h4>
-                                <p>{entry.dosage}</p>
-                                {entry.instructions ? <small>{entry.instructions}</small> : null}
-                              </div>
-                              <time>{entry.scheduledTime}</time>
-                            </li>
-                          ))}
+                          {entries.map((entry) => {
+                            const isPending = pendingDoseActionIds.includes(entry.id);
+
+                            return (
+                              <li className="dose-item" key={entry.id}>
+                                <div className="dose-copy">
+                                  <div className="dose-topline">
+                                    <h4>{entry.medicationName}</h4>
+                                    <time>{entry.scheduledTime}</time>
+                                  </div>
+                                  <p>{entry.dosage}</p>
+                                  {entry.instructions ? <small>{entry.instructions}</small> : null}
+                                  {!isActionable ? (
+                                    <div className="dose-meta">
+                                      <span className={`status-pill ${entry.status}`}>
+                                        {formatStatusLabel(entry.status)}
+                                      </span>
+                                      <span>{formatActionTime(entry.actionTakenAt)}</span>
+                                    </div>
+                                  ) : null}
+                                </div>
+
+                                {isActionable ? (
+                                  <div className="dose-actions" aria-label="Dose actions">
+                                    {doseActionOptions.map((action) => (
+                                      <button
+                                        className={action.className}
+                                        disabled={isPending}
+                                        key={action.status}
+                                        onClick={() => handleDoseAction(entry.id, action.status)}
+                                        type="button"
+                                      >
+                                        {isPending ? "Saving..." : action.label}
+                                      </button>
+                                    ))}
+                                  </div>
+                                ) : null}
+                              </li>
+                            );
+                          })}
                         </ul>
                       )}
                     </section>
@@ -1149,13 +1453,124 @@ export function App() {
               </div>
             )}
           </section>
+
+          <section className="panel history-panel">
+            <div className="panel-header history-header">
+              <div>
+                <h2>Dose History</h2>
+                <p className="panel-copy">
+                  Filter by medication or outcome to review adherence details quickly.
+                </p>
+              </div>
+
+              <div className="history-filters">
+                <label>
+                  Medication
+                  <select
+                    value={historyFilters.medicationId}
+                    onChange={(event) =>
+                      setHistoryFilters((current) => ({
+                        ...current,
+                        medicationId: event.target.value
+                      }))
+                    }
+                  >
+                    <option value="all">All medications</option>
+                    {medications.map((medication) => (
+                      <option key={medication.id} value={medication.id}>
+                        {medication.name}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+
+                <label>
+                  Outcome
+                  <select
+                    value={historyFilters.status}
+                    onChange={(event) =>
+                      setHistoryFilters((current) => ({
+                        ...current,
+                        status: event.target.value as HistoryStatusFilter
+                      }))
+                    }
+                  >
+                    {historyStatusOptions.map((option) => (
+                      <option key={option.value} value={option.value}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+            </div>
+
+            <section className="history-summary-grid" aria-label="History summary">
+              <article className="history-stat">
+                <span>Taken</span>
+                <strong>{history.summary.completed}</strong>
+              </article>
+              <article className="history-stat">
+                <span>Missed</span>
+                <strong>{history.summary.missed}</strong>
+              </article>
+              <article className="history-stat">
+                <span>Skipped</span>
+                <strong>{history.summary.skipped}</strong>
+              </article>
+              <article className="history-stat">
+                <span>Total</span>
+                <strong>{history.summary.total}</strong>
+              </article>
+            </section>
+
+            {history.history.length === 0 ? (
+              <div className="empty-state roomy">
+                <strong>No history matches these filters</strong>
+                <p>Mark a dose as taken, missed, or skipped to populate this timeline.</p>
+              </div>
+            ) : (
+              <div className="history-timeline">
+                {historyGroups.map(([date, entries]) => (
+                  <section className="history-day" key={date}>
+                    <div className="history-day-header">
+                      <h3>{date}</h3>
+                      <span>{entries.length} outcomes</span>
+                    </div>
+
+                    <ul className="history-list">
+                      {entries.map((entry) => (
+                        <li className="history-item" key={entry.id}>
+                          <div>
+                            <div className="history-item-heading">
+                              <h4>{entry.medicationName}</h4>
+                              <span>{entry.scheduledTime}</span>
+                            </div>
+                            <p>{entry.dosage}</p>
+                            {entry.reason ? <small>{entry.reason}</small> : null}
+                          </div>
+
+                          <div className="history-item-meta">
+                            <span className={`status-pill ${entry.status}`}>
+                              {formatStatusLabel(entry.status)}
+                            </span>
+                            <span>{formatActionTime(entry.actionTakenAt)}</span>
+                          </div>
+                        </li>
+                      ))}
+                    </ul>
+                  </section>
+                ))}
+              </div>
+            )}
+          </section>
         </>
       )}
 
       <section className="footer-note">
         <strong>Backend endpoints:</strong> `GET /api/medications`, `POST /api/medications`,
-        `PATCH/DELETE /api/medications/:id`, `GET /api/medications?includeArchived=true`,
-        `GET /api/schedule/today`
+        `PATCH/DELETE /api/medications/:id`, `GET /api/schedule/today`, `PATCH /api/doses/:id`,
+        `GET /api/history`
       </section>
     </main>
   );

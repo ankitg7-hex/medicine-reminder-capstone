@@ -367,6 +367,178 @@ test("PATCH /api/medications regenerates the daily schedule", async () => {
   });
 });
 
+test("PATCH /api/doses/:id records dose actions and updates history", async () => {
+  await withServer(async (baseUrl) => {
+    const session = await createDemoSession(baseUrl);
+    const today = getTodayInKolkata();
+
+    const createResponse = await fetch(`${baseUrl}/api/medications`, {
+      method: "POST",
+      headers: session.headers,
+      body: JSON.stringify({
+        name: "Omega 3",
+        dosage: "1 capsule",
+        startDate: today,
+        schedule: {
+          recurrenceType: "daily",
+          times: ["08:00", "21:00"]
+        }
+      })
+    });
+    const createBody = await createResponse.json();
+
+    assert.equal(createResponse.status, 201);
+
+    const scheduleResponse = await fetch(`${baseUrl}/api/schedule/today`, {
+      headers: {
+        authorization: session.headers.authorization
+      }
+    });
+    const scheduleBody = await scheduleResponse.json();
+    const actionableDose = [
+      ...scheduleBody.groups.dueNow,
+      ...scheduleBody.groups.upcoming
+    ][0];
+
+    assert.ok(actionableDose);
+
+    const actionResponse = await fetch(`${baseUrl}/api/doses/${actionableDose.id}`, {
+      method: "PATCH",
+      headers: session.headers,
+      body: JSON.stringify({
+        status: "completed",
+        notes: "Taken with breakfast"
+      })
+    });
+    const actionBody = await actionResponse.json();
+
+    assert.equal(actionResponse.status, 200);
+    assert.equal(actionBody.dose.status, "completed");
+    assert.equal(actionBody.dose.notes, "Taken with breakfast");
+    assert.equal(typeof actionBody.dose.actionTakenAt, "string");
+
+    const refreshedScheduleResponse = await fetch(`${baseUrl}/api/schedule/today`, {
+      headers: {
+        authorization: session.headers.authorization
+      }
+    });
+    const refreshedScheduleBody = await refreshedScheduleResponse.json();
+
+    assert.equal(refreshedScheduleBody.summary.completed, 1);
+    assert.equal(refreshedScheduleBody.groups.completed.length, 1);
+    assert.equal(refreshedScheduleBody.groups.completed[0].id, actionableDose.id);
+
+    const historyResponse = await fetch(`${baseUrl}/api/history`, {
+      headers: {
+        authorization: session.headers.authorization
+      }
+    });
+    const historyBody = await historyResponse.json();
+
+    assert.equal(historyResponse.status, 200);
+    assert.equal(historyBody.summary.completed, 1);
+    assert.equal(historyBody.history.length, 1);
+    assert.equal(historyBody.history[0].medicationId, createBody.medication.id);
+    assert.equal(historyBody.history[0].status, "completed");
+  });
+});
+
+test("GET /api/history supports medication and status filters", async () => {
+  await withServer(async (baseUrl) => {
+    const session = await createDemoSession(baseUrl);
+    const today = getTodayInKolkata();
+
+    const firstCreateResponse = await fetch(`${baseUrl}/api/medications`, {
+      method: "POST",
+      headers: session.headers,
+      body: JSON.stringify({
+        name: "Vitamin B12",
+        dosage: "1 tablet",
+        startDate: today,
+        schedule: {
+          recurrenceType: "daily",
+          times: ["08:00"]
+        }
+      })
+    });
+    const firstCreateBody = await firstCreateResponse.json();
+
+    const secondCreateResponse = await fetch(`${baseUrl}/api/medications`, {
+      method: "POST",
+      headers: session.headers,
+      body: JSON.stringify({
+        name: "Magnesium",
+        dosage: "1 tablet",
+        startDate: today,
+        schedule: {
+          recurrenceType: "daily",
+          times: ["21:00"]
+        }
+      })
+    });
+    const secondCreateBody = await secondCreateResponse.json();
+
+    const scheduleResponse = await fetch(`${baseUrl}/api/schedule/today`, {
+      headers: {
+        authorization: session.headers.authorization
+      }
+    });
+    const scheduleBody = await scheduleResponse.json();
+    const firstDose = [...scheduleBody.groups.dueNow, ...scheduleBody.groups.upcoming].find(
+      (entry) => entry.medicationId === firstCreateBody.medication.id
+    );
+    const secondDose = [...scheduleBody.groups.dueNow, ...scheduleBody.groups.upcoming].find(
+      (entry) => entry.medicationId === secondCreateBody.medication.id
+    );
+
+    assert.ok(firstDose);
+    assert.ok(secondDose);
+
+    await fetch(`${baseUrl}/api/doses/${firstDose.id}`, {
+      method: "PATCH",
+      headers: session.headers,
+      body: JSON.stringify({
+        status: "missed"
+      })
+    });
+
+    await fetch(`${baseUrl}/api/doses/${secondDose.id}`, {
+      method: "PATCH",
+      headers: session.headers,
+      body: JSON.stringify({
+        status: "skipped"
+      })
+    });
+
+    const missedHistoryResponse = await fetch(`${baseUrl}/api/history?status=missed`, {
+      headers: {
+        authorization: session.headers.authorization
+      }
+    });
+    const missedHistoryBody = await missedHistoryResponse.json();
+
+    assert.equal(missedHistoryResponse.status, 200);
+    assert.equal(missedHistoryBody.summary.missed, 1);
+    assert.equal(missedHistoryBody.history.length, 1);
+    assert.equal(missedHistoryBody.history[0].medicationId, firstCreateBody.medication.id);
+
+    const medicationHistoryResponse = await fetch(
+      `${baseUrl}/api/history?medicationId=${secondCreateBody.medication.id}`,
+      {
+        headers: {
+          authorization: session.headers.authorization
+        }
+      }
+    );
+    const medicationHistoryBody = await medicationHistoryResponse.json();
+
+    assert.equal(medicationHistoryResponse.status, 200);
+    assert.equal(medicationHistoryBody.summary.skipped, 1);
+    assert.equal(medicationHistoryBody.history.length, 1);
+    assert.equal(medicationHistoryBody.history[0].status, "skipped");
+  });
+});
+
 test("medication plans are isolated by logged in email", async () => {
   await withServer(async (baseUrl) => {
     const firstSession = await createDemoSession(baseUrl, {
