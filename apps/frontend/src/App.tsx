@@ -37,8 +37,21 @@ type Medication = {
 };
 
 type DoseActionStatus = "completed" | "missed" | "skipped";
+type ReminderStatus = "queued" | "sent" | "delivered" | "failed";
 type ScheduleGroupKey = "dueNow" | "upcoming" | "completed" | "missed" | "skipped";
 type HistoryStatusFilter = DoseActionStatus | "all";
+
+type ReminderBadge = {
+  id: string;
+  scheduledSendAt: string;
+  scheduledSendTime: string;
+  status: ReminderStatus;
+  channel: string;
+  providerReference: string | null;
+  sentAt: string | null;
+  deliveredAt: string | null;
+  failedAt: string | null;
+};
 
 type DoseEntry = {
   id: string;
@@ -53,6 +66,7 @@ type DoseEntry = {
   status: string;
   actionTakenAt: string | null;
   notes: string | null;
+  reminder: ReminderBadge | null;
 };
 
 type ScheduleResponse = {
@@ -65,6 +79,64 @@ type ScheduleResponse = {
 type HistoryResponse = {
   summary: Record<DoseActionStatus | "total", number>;
   history: DoseEntry[];
+};
+
+type ReminderEntry = {
+  id: string;
+  doseEventId: string;
+  medicationId: string | null;
+  medicationName: string;
+  scheduledSendAt: string;
+  scheduledSendTime: string;
+  status: ReminderStatus;
+  channel: string;
+  providerReference: string | null;
+  sentAt: string | null;
+  deliveredAt: string | null;
+  failedAt: string | null;
+};
+
+type DeviceEntry = {
+  id: string;
+  deviceName: string;
+  platform: string;
+  tokenPreview: string;
+  createdAt: string;
+  lastSeenAt: string;
+};
+
+type ReminderResponse = {
+  date: string;
+  timezone: string;
+  policy: {
+    staleAfterMinutes: number;
+  };
+  summary: Record<ReminderStatus | "total", number>;
+  devices: DeviceEntry[];
+  reminders: ReminderEntry[];
+};
+
+type ReminderProcessResponse = {
+  processed: {
+    queued: number;
+    sent: number;
+    delivered: number;
+    failed: number;
+    autoMissed: number;
+  };
+  reminders: ReminderResponse;
+};
+
+type AuditEntry = {
+  id: string;
+  type: string;
+  userId: string | null;
+  details: Record<string, unknown>;
+  recordedAt: string;
+};
+
+type AuditResponse = {
+  entries: AuditEntry[];
 };
 
 type HistoryFilters = {
@@ -85,6 +157,12 @@ type MedicationFormState = {
     weekdays: string[];
     times: string[];
   };
+};
+
+type DeviceFormState = {
+  token: string;
+  deviceName: string;
+  platform: string;
 };
 
 const sessionStorageKey = "medicine-reminder-demo-token";
@@ -112,22 +190,22 @@ const scheduleGroupMeta: Array<{
   {
     key: "upcoming",
     title: "Upcoming",
-    description: "Preview the rest of today so nothing sneaks up on you."
+    description: "Preview the rest of the day and confirm reminders are queued."
   },
   {
     key: "completed",
     title: "Taken",
-    description: "Completed doses stay visible for a quick confidence check."
+    description: "Completed doses stay visible with reminder delivery context."
   },
   {
     key: "missed",
     title: "Missed",
-    description: "Missed items stay visible so they are easy to review later."
+    description: "Missed items include manual actions and reminder timeout cases."
   },
   {
     key: "skipped",
     title: "Skipped",
-    description: "Use skip when the dose was intentionally not taken."
+    description: "Use skip when a dose is intentionally not taken."
   }
 ];
 
@@ -147,6 +225,20 @@ const historyStatusOptions: Array<{ value: HistoryStatusFilter; label: string }>
   { value: "missed", label: "Missed" },
   { value: "skipped", label: "Skipped" }
 ];
+
+const reminderStatusLabels: Record<ReminderStatus, string> = {
+  queued: "Queued",
+  sent: "Sent",
+  delivered: "Delivered",
+  failed: "Failed"
+};
+
+const reminderStatusTone: Record<ReminderStatus, string> = {
+  queued: "queued",
+  sent: "sent",
+  delivered: "delivered",
+  failed: "failed"
+};
 
 const medicineCatalog = [
   {
@@ -266,6 +358,39 @@ function createEmptyHistory(): HistoryResponse {
       total: 0
     },
     history: []
+  };
+}
+
+function createEmptyReminderResponse(): ReminderResponse {
+  return {
+    date: "",
+    timezone: "",
+    policy: {
+      staleAfterMinutes: 120
+    },
+    summary: {
+      queued: 0,
+      sent: 0,
+      delivered: 0,
+      failed: 0,
+      total: 0
+    },
+    devices: [],
+    reminders: []
+  };
+}
+
+function createEmptyAuditResponse(): AuditResponse {
+  return {
+    entries: []
+  };
+}
+
+function createDefaultDeviceForm(): DeviceFormState {
+  return {
+    token: "demo-device-token-001",
+    deviceName: "Ananya's Pixel",
+    platform: "android"
   };
 }
 
@@ -392,7 +517,7 @@ function applyDoseActionToSchedule(
 }
 
 function applyDoseActionToHistory(
-  current: HistoryResponse | null,
+  current: HistoryResponse,
   existingEntry: DoseEntry,
   nextStatus: DoseActionStatus,
   actionTakenAt: string
@@ -404,7 +529,7 @@ function applyDoseActionToHistory(
   };
   const nextHistory = [
     nextEntry,
-    ...(current?.history ?? []).filter((entry) => entry.id !== nextEntry.id)
+    ...current.history.filter((entry) => entry.id !== nextEntry.id)
   ].sort((left, right) => right.scheduledAt.localeCompare(left.scheduledAt));
 
   return {
@@ -434,7 +559,7 @@ function findDoseEntry(schedule: ScheduleResponse | null, doseId: string) {
   return null;
 }
 
-function formatStatusLabel(status: string) {
+function formatDoseStatusLabel(status: string) {
   if (status === "completed") {
     return "Taken";
   }
@@ -442,9 +567,9 @@ function formatStatusLabel(status: string) {
   return status.charAt(0).toUpperCase() + status.slice(1);
 }
 
-function formatActionTime(value: string | null) {
+function formatTimestamp(value: string | null) {
   if (!value) {
-    return "Awaiting action";
+    return "Pending";
   }
 
   return new Intl.DateTimeFormat("en-US", {
@@ -466,6 +591,37 @@ function groupHistoryEntries(entries: DoseEntry[]) {
   );
 }
 
+function formatReminderSupportText(entry: DoseEntry) {
+  if (!entry.reminder) {
+    return "Reminder event pending generation.";
+  }
+
+  return `${reminderStatusLabels[entry.reminder.status]} via ${entry.reminder.channel} at ${entry.reminder.scheduledSendTime}`;
+}
+
+function summarizeAuditEntry(entry: AuditEntry) {
+  switch (entry.type) {
+    case "device.registered":
+      return "Device token registered for future reminder delivery.";
+    case "reminder.worker_processed":
+      return "Reminder worker simulated a delivery cycle.";
+    case "dose.updated":
+      return "Dose outcome was updated.";
+    case "medication.created":
+      return "Medication plan created.";
+    case "medication.updated":
+      return "Medication plan updated.";
+    case "medication.archived":
+      return "Medication plan archived.";
+    case "profile.updated":
+      return "Profile settings updated.";
+    case "session.demo_login":
+      return "Demo session created.";
+    default:
+      return entry.type;
+  }
+}
+
 export function App() {
   const [token, setToken] = useState<string | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -474,6 +630,8 @@ export function App() {
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
   const [medicationError, setMedicationError] = useState<string | null>(null);
   const [isWorkspaceLoading, setIsWorkspaceLoading] = useState(false);
+  const [isReminderProcessing, setIsReminderProcessing] = useState(false);
+  const [isDeviceSaving, setIsDeviceSaving] = useState(false);
   const [editingMedicationId, setEditingMedicationId] = useState<string | null>(null);
   const [historyFilters, setHistoryFilters] = useState<HistoryFilters>({
     medicationId: "all",
@@ -490,12 +648,15 @@ export function App() {
     email: "",
     timezone: ""
   });
+  const [deviceForm, setDeviceForm] = useState<DeviceFormState>(createDefaultDeviceForm());
   const [medicationForm, setMedicationForm] = useState<MedicationFormState>(
     createDefaultMedicationForm()
   );
   const [medications, setMedications] = useState<Medication[]>([]);
   const [schedule, setSchedule] = useState<ScheduleResponse | null>(null);
   const [history, setHistory] = useState<HistoryResponse>(createEmptyHistory());
+  const [reminders, setReminders] = useState<ReminderResponse>(createEmptyReminderResponse());
+  const [auditTrail, setAuditTrail] = useState<AuditResponse>(createEmptyAuditResponse());
 
   const medicineSuggestions = medicationForm.name.trim()
     ? medicineCatalog.filter((medicine) =>
@@ -508,7 +669,7 @@ export function App() {
     const savedToken = window.localStorage.getItem(sessionStorageKey);
 
     if (!savedToken) {
-      setStatus("Sign in with a demo profile to manage today's doses and review history.");
+      setStatus("Sign in with a demo profile to simulate reminders and review release-readiness signals.");
       return;
     }
 
@@ -548,7 +709,7 @@ export function App() {
       window.localStorage.removeItem(sessionStorageKey);
       setToken(null);
       setProfile(null);
-      setStatus("Sign in with a demo profile to manage today's doses and review history.");
+      setStatus("Sign in with a demo profile to simulate reminders and review release-readiness signals.");
       setError(
         requestError instanceof Error
           ? requestError.message
@@ -562,15 +723,25 @@ export function App() {
       setWorkspaceError(null);
       setIsWorkspaceLoading(true);
 
-      const [medicationsResponse, scheduleResponse, historyResponse] = await Promise.all([
+      const [
+        medicationsResponse,
+        scheduleResponse,
+        historyResponse,
+        reminderResponse,
+        auditResponse
+      ] = await Promise.all([
         apiRequest<{ medications: Medication[] }>("/api/medications", {}, nextToken),
         apiRequest<ScheduleResponse>("/api/schedule/today", {}, nextToken),
-        apiRequest<HistoryResponse>(buildHistoryPath(nextFilters), {}, nextToken)
+        apiRequest<HistoryResponse>(buildHistoryPath(nextFilters), {}, nextToken),
+        apiRequest<ReminderResponse>("/api/reminders/today", {}, nextToken),
+        apiRequest<AuditResponse>("/api/audit-logs?limit=8", {}, nextToken)
       ]);
 
       setMedications(medicationsResponse.medications);
       setSchedule(scheduleResponse);
       setHistory(historyResponse);
+      setReminders(reminderResponse);
+      setAuditTrail(auditResponse);
     } catch (requestError) {
       setWorkspaceError(
         requestError instanceof Error
@@ -600,7 +771,7 @@ export function App() {
       setStatus("Signed in");
     } catch (requestError) {
       setError(requestError instanceof Error ? requestError.message : "Demo login failed.");
-      setStatus("Sign in with a demo profile to manage today's doses and review history.");
+      setStatus("Sign in with a demo profile to simulate reminders and review release-readiness signals.");
     }
   }
 
@@ -776,6 +947,74 @@ export function App() {
     }
   }
 
+  async function handleProcessReminders() {
+    if (!token || isReminderProcessing) {
+      return;
+    }
+
+    try {
+      setIsReminderProcessing(true);
+      setStatus("Running reminder dispatch...");
+      setWorkspaceError(null);
+
+      const response = await apiRequest<ReminderProcessResponse>(
+        "/api/reminders/process",
+        {
+          method: "POST"
+        },
+        token
+      );
+
+      setReminders(response.reminders);
+      await loadWorkspace(token, historyFilters);
+      setStatus(
+        response.processed.autoMissed > 0
+          ? "Reminder worker ran and auto-marked stale doses as missed"
+          : "Reminder worker ran successfully"
+      );
+    } catch (requestError) {
+      setWorkspaceError(
+        requestError instanceof Error ? requestError.message : "Could not process reminders."
+      );
+      setStatus("Signed in");
+    } finally {
+      setIsReminderProcessing(false);
+    }
+  }
+
+  async function handleDeviceRegister(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    if (!token || isDeviceSaving) {
+      return;
+    }
+
+    try {
+      setIsDeviceSaving(true);
+      setStatus("Registering reminder-capable device...");
+      setWorkspaceError(null);
+
+      await apiRequest<{ device: DeviceEntry; devices: DeviceEntry[] }>(
+        "/api/devices/register",
+        {
+          method: "POST",
+          body: JSON.stringify(deviceForm)
+        },
+        token
+      );
+
+      await loadWorkspace(token, historyFilters);
+      setStatus("Device token registered");
+    } catch (requestError) {
+      setWorkspaceError(
+        requestError instanceof Error ? requestError.message : "Could not register the device."
+      );
+      setStatus("Signed in");
+    } finally {
+      setIsDeviceSaving(false);
+    }
+  }
+
   function startEditingMedication(medication: Medication) {
     setEditingMedicationId(medication.id);
     setMedicationError(null);
@@ -872,8 +1111,11 @@ export function App() {
     setMedications([]);
     setSchedule(null);
     setHistory(createEmptyHistory());
+    setReminders(createEmptyReminderResponse());
+    setAuditTrail(createEmptyAuditResponse());
     setEditingMedicationId(null);
     setMedicationForm(createDefaultMedicationForm());
+    setDeviceForm(createDefaultDeviceForm());
     setHistoryFilters({
       medicationId: "all",
       status: "all"
@@ -882,31 +1124,49 @@ export function App() {
     setError(null);
     setWorkspaceError(null);
     setMedicationError(null);
-    setStatus("Sign in with a demo profile to manage today's doses and review history.");
+    setStatus("Sign in with a demo profile to simulate reminders and review release-readiness signals.");
   }
 
   return (
-    <main className="app-shell">
+    <main className="app-shell" id="top">
+      <a className="skip-link" href="#workspace">
+        Skip to workspace
+      </a>
+
       <section className="hero">
         <div className="hero-copy">
-          <p className="eyebrow">Milestone 5</p>
-          <h1>Dose Actions, Daily Signals, And Adherence History</h1>
+          <p className="eyebrow">Milestones 6 And 7</p>
+          <h1>Reminder Delivery, Release Guardrails, And Final MVP Polish</h1>
           <p className="subtitle">
-            Mark doses as taken, missed, or skipped right from today&apos;s board, then
-            review a clean medication history without leaving the workspace.
+            Simulate reminder dispatch, register notification-capable devices, review audit
+            activity, and ship the MVP with safer defaults across the backend and UI.
           </p>
         </div>
 
         <div className="hero-chip">
-          <span>One-tap outcomes</span>
-          <strong>History ready</strong>
+          <span>Reminder worker</span>
+          <strong>Release ready</strong>
         </div>
       </section>
 
-      {error ? <p className="alert error">{error}</p> : null}
-      {workspaceError ? <p className="alert error">{workspaceError}</p> : null}
-      {medicationError ? <p className="alert error">{medicationError}</p> : null}
-      <p className="alert info">{status}</p>
+      {error ? (
+        <p className="alert error" role="alert">
+          {error}
+        </p>
+      ) : null}
+      {workspaceError ? (
+        <p className="alert error" role="alert">
+          {workspaceError}
+        </p>
+      ) : null}
+      {medicationError ? (
+        <p className="alert error" role="alert">
+          {medicationError}
+        </p>
+      ) : null}
+      <p className="alert info" aria-live="polite" role="status">
+        {status}
+      </p>
 
       {!profile ? (
         <section className="panel auth-panel">
@@ -966,37 +1226,41 @@ export function App() {
         </section>
       ) : (
         <>
-          <section className="status-grid" aria-label="Scheduling summary">
+          <section className="status-grid" aria-label="Milestone summary">
             <article className="stat-card accent-card">
               <span className="stat-label">Due now</span>
               <strong className="stat-value">{schedule?.summary.dueNow ?? 0}</strong>
             </article>
             <article className="stat-card">
-              <span className="stat-label">Upcoming today</span>
-              <strong className="stat-value">{schedule?.summary.upcoming ?? 0}</strong>
+              <span className="stat-label">Queued reminders</span>
+              <strong className="stat-value">{reminders.summary.queued}</strong>
             </article>
             <article className="stat-card">
-              <span className="stat-label">Taken today</span>
-              <strong className="stat-value">{schedule?.summary.completed ?? 0}</strong>
+              <span className="stat-label">Delivered reminders</span>
+              <strong className="stat-value">{reminders.summary.delivered}</strong>
             </article>
             <article className="stat-card">
-              <span className="stat-label">Missed today</span>
-              <strong className="stat-value">{schedule?.summary.missed ?? 0}</strong>
+              <span className="stat-label">Failed reminders</span>
+              <strong className="stat-value">{reminders.summary.failed}</strong>
             </article>
             <article className="stat-card">
-              <span className="stat-label">History entries</span>
-              <strong className="stat-value">{history.summary.total}</strong>
+              <span className="stat-label">Audit entries</span>
+              <strong className="stat-value">{auditTrail.entries.length}</strong>
             </article>
           </section>
 
-          <section className="workspace-grid">
-            <section className="panel medication-panel">
+          <section className="workspace-grid" id="workspace">
+            <section
+              aria-busy={isWorkspaceLoading}
+              aria-label="Medication setup"
+              className="panel medication-panel"
+            >
               <div className="panel-header">
                 <div>
                   <h2>{editingMedicationId ? "Edit Medication" : "Add Medication"}</h2>
                   <p className="panel-copy">
-                    Keep treatment plans current so today&apos;s board and history stay
-                    trustworthy.
+                    Keep medication plans and reminder times current so delivery state and audit
+                    logs stay trustworthy.
                   </p>
                 </div>
                 {editingMedicationId ? (
@@ -1008,7 +1272,7 @@ export function App() {
                     Cancel Edit
                   </button>
                 ) : (
-                  <span className="panel-badge">Schedule builder</span>
+                  <span className="panel-badge">Reminder-aware schedule builder</span>
                 )}
               </div>
 
@@ -1259,7 +1523,7 @@ export function App() {
                   <div>
                     <h2>Saved Medication Plans</h2>
                     <p className="panel-copy">
-                      Edit a plan to regenerate the rolling dose window.
+                      Edit a plan to regenerate both dose events and reminder events.
                     </p>
                   </div>
                   <span className="panel-badge">{medications.length} active</span>
@@ -1268,7 +1532,7 @@ export function App() {
                 {medications.length === 0 ? (
                   <div className="empty-state">
                     <strong>No medicines yet</strong>
-                    <p>Create your first medication plan to populate today&apos;s schedule.</p>
+                    <p>Create your first medication plan to populate today's schedule.</p>
                   </div>
                 ) : (
                   <ul className="medication-list">
@@ -1298,12 +1562,158 @@ export function App() {
                 )}
               </section>
 
+              <section className="panel reminder-panel">
+                <div className="panel-header">
+                  <div>
+                    <h2>Reminder Center</h2>
+                    <p className="panel-copy">
+                      Process queued reminders, track delivery state, and register mock devices.
+                    </p>
+                  </div>
+                  <button
+                    className="primary-button"
+                    disabled={isReminderProcessing}
+                    onClick={handleProcessReminders}
+                    type="button"
+                  >
+                    {isReminderProcessing ? "Processing..." : "Run Reminder Worker"}
+                  </button>
+                </div>
+
+                <section className="mini-stat-grid" aria-label="Reminder summary">
+                  <article className="mini-stat">
+                    <span>Queued</span>
+                    <strong>{reminders.summary.queued}</strong>
+                  </article>
+                  <article className="mini-stat">
+                    <span>Sent</span>
+                    <strong>{reminders.summary.sent}</strong>
+                  </article>
+                  <article className="mini-stat">
+                    <span>Delivered</span>
+                    <strong>{reminders.summary.delivered}</strong>
+                  </article>
+                  <article className="mini-stat">
+                    <span>Failed</span>
+                    <strong>{reminders.summary.failed}</strong>
+                  </article>
+                </section>
+
+                <div className="support-card">
+                  <strong>{reminders.devices.length} device registrations</strong>
+                  <p>
+                    Without a registered device, reminders fall back to mock in-app delivery.
+                    Items older than {reminders.policy.staleAfterMinutes} minutes can be auto-marked
+                    missed by the worker.
+                  </p>
+                </div>
+
+                <form className="form-grid compact-form" onSubmit={handleDeviceRegister}>
+                  <label>
+                    Device token
+                    <input
+                      value={deviceForm.token}
+                      onChange={(event) =>
+                        setDeviceForm((current) => ({
+                          ...current,
+                          token: event.target.value
+                        }))
+                      }
+                    />
+                  </label>
+
+                  <div className="two-column-grid">
+                    <label>
+                      Device name
+                      <input
+                        value={deviceForm.deviceName}
+                        onChange={(event) =>
+                          setDeviceForm((current) => ({
+                            ...current,
+                            deviceName: event.target.value
+                          }))
+                        }
+                      />
+                    </label>
+
+                    <label>
+                      Platform
+                      <select
+                        value={deviceForm.platform}
+                        onChange={(event) =>
+                          setDeviceForm((current) => ({
+                            ...current,
+                            platform: event.target.value
+                          }))
+                        }
+                      >
+                        <option value="android">Android</option>
+                        <option value="ios">iOS</option>
+                        <option value="web">Web</option>
+                      </select>
+                    </label>
+                  </div>
+
+                  <button className="secondary-button" disabled={isDeviceSaving} type="submit">
+                    {isDeviceSaving ? "Saving device..." : "Register Device Token"}
+                  </button>
+                </form>
+
+                {reminders.devices.length === 0 ? (
+                  <div className="empty-state">
+                    <strong>No device tokens registered</strong>
+                    <p>Register a mock device to switch future reminders from in-app to push.</p>
+                  </div>
+                ) : (
+                  <ul className="device-list">
+                    {reminders.devices.map((device) => (
+                      <li className="device-item" key={device.id}>
+                        <div>
+                          <strong>{device.deviceName}</strong>
+                          <p>
+                            {device.platform} · {device.tokenPreview}
+                          </p>
+                        </div>
+                        <small>{formatTimestamp(device.lastSeenAt)}</small>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+
+                {reminders.reminders.length === 0 ? (
+                  <div className="empty-state">
+                    <strong>No reminder events for today</strong>
+                    <p>Reminder events appear here once today's dose window exists.</p>
+                  </div>
+                ) : (
+                  <ul className="reminder-list">
+                    {reminders.reminders.map((reminder) => (
+                      <li className="reminder-item" key={reminder.id}>
+                        <div>
+                          <div className="history-item-heading">
+                            <h3>{reminder.medicationName}</h3>
+                            <span>{reminder.scheduledSendTime}</span>
+                          </div>
+                          <p>{reminder.channel} channel</p>
+                          {reminder.providerReference ? (
+                            <small>{reminder.providerReference}</small>
+                          ) : null}
+                        </div>
+                        <span className={`status-pill ${reminderStatusTone[reminder.status]}`}>
+                          {reminderStatusLabels[reminder.status]}
+                        </span>
+                      </li>
+                    ))}
+                  </ul>
+                )}
+              </section>
+
               <section className="panel">
                 <div className="panel-header">
                   <div>
                     <h2>Profile Settings</h2>
                     <p className="panel-copy">
-                      Timezone changes regenerate the reminder window.
+                      Timezone changes regenerate the dose and reminder windows.
                     </p>
                   </div>
                   <button className="secondary-button" onClick={handleLogout} type="button">
@@ -1366,7 +1776,7 @@ export function App() {
           <section className="panel schedule-panel">
             <div className="panel-header">
               <div>
-                <h2>Today&apos;s Schedule</h2>
+                <h2>Today's Schedule</h2>
                 <p className="panel-copy">
                   {schedule
                     ? `${schedule.date} in ${schedule.timezone}`
@@ -1417,12 +1827,13 @@ export function App() {
                                   </div>
                                   <p>{entry.dosage}</p>
                                   {entry.instructions ? <small>{entry.instructions}</small> : null}
+                                  <small className="supporting-line">{formatReminderSupportText(entry)}</small>
                                   {!isActionable ? (
                                     <div className="dose-meta">
                                       <span className={`status-pill ${entry.status}`}>
-                                        {formatStatusLabel(entry.status)}
+                                        {formatDoseStatusLabel(entry.status)}
                                       </span>
-                                      <span>{formatActionTime(entry.actionTakenAt)}</span>
+                                      <span>{formatTimestamp(entry.actionTakenAt)}</span>
                                     </div>
                                   ) : null}
                                 </div>
@@ -1454,115 +1865,157 @@ export function App() {
             )}
           </section>
 
-          <section className="panel history-panel">
-            <div className="panel-header history-header">
-              <div>
-                <h2>Dose History</h2>
-                <p className="panel-copy">
-                  Filter by medication or outcome to review adherence details quickly.
+          <section className="insights-grid">
+            <section className="panel history-panel">
+              <div className="panel-header history-header">
+                <div>
+                  <h2>Dose History</h2>
+                  <p className="panel-copy">
+                    Filter by medication or outcome to review adherence details quickly.
+                  </p>
+                </div>
+
+                <div className="history-filters">
+                  <label>
+                    Medication
+                    <select
+                      value={historyFilters.medicationId}
+                      onChange={(event) =>
+                        setHistoryFilters((current) => ({
+                          ...current,
+                          medicationId: event.target.value
+                        }))
+                      }
+                    >
+                      <option value="all">All medications</option>
+                      {medications.map((medication) => (
+                        <option key={medication.id} value={medication.id}>
+                          {medication.name}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+
+                  <label>
+                    Outcome
+                    <select
+                      value={historyFilters.status}
+                      onChange={(event) =>
+                        setHistoryFilters((current) => ({
+                          ...current,
+                          status: event.target.value as HistoryStatusFilter
+                        }))
+                      }
+                    >
+                      {historyStatusOptions.map((option) => (
+                        <option key={option.value} value={option.value}>
+                          {option.label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                </div>
+              </div>
+
+              <section className="history-summary-grid" aria-label="History summary">
+                <article className="history-stat">
+                  <span>Taken</span>
+                  <strong>{history.summary.completed}</strong>
+                </article>
+                <article className="history-stat">
+                  <span>Missed</span>
+                  <strong>{history.summary.missed}</strong>
+                </article>
+                <article className="history-stat">
+                  <span>Skipped</span>
+                  <strong>{history.summary.skipped}</strong>
+                </article>
+                <article className="history-stat">
+                  <span>Total</span>
+                  <strong>{history.summary.total}</strong>
+                </article>
+              </section>
+
+              {history.history.length === 0 ? (
+                <div className="empty-state roomy">
+                  <strong>No history matches these filters</strong>
+                  <p>Mark a dose as taken, missed, or skipped to populate this timeline.</p>
+                </div>
+              ) : (
+                <div className="history-timeline">
+                  {historyGroups.map(([date, entries]) => (
+                    <section className="history-day" key={date}>
+                      <div className="history-day-header">
+                        <h3>{date}</h3>
+                        <span>{entries.length} outcomes</span>
+                      </div>
+
+                      <ul className="history-list">
+                        {entries.map((entry) => (
+                          <li className="history-item" key={entry.id}>
+                            <div>
+                              <div className="history-item-heading">
+                                <h4>{entry.medicationName}</h4>
+                                <span>{entry.scheduledTime}</span>
+                              </div>
+                              <p>{entry.dosage}</p>
+                              {entry.reason ? <small>{entry.reason}</small> : null}
+                            </div>
+
+                            <div className="history-item-meta">
+                              <span className={`status-pill ${entry.status}`}>
+                                {formatDoseStatusLabel(entry.status)}
+                              </span>
+                              <span>{formatTimestamp(entry.actionTakenAt)}</span>
+                            </div>
+                          </li>
+                        ))}
+                      </ul>
+                    </section>
+                  ))}
+                </div>
+              )}
+            </section>
+
+            <section className="panel audit-panel">
+              <div className="panel-header">
+                <div>
+                  <h2>Release Readiness</h2>
+                  <p className="panel-copy">
+                    Audit activity, security defaults, and CI checks converge here for the final
+                    MVP pass.
+                  </p>
+                </div>
+                <span className="panel-badge">Milestone 7</span>
+              </div>
+
+              <div className="support-card">
+                <strong>Checklist highlights</strong>
+                <p>
+                  Security headers, CORS allowlists, audit logging, reminder worker tests, and
+                  secret/dependency scan scripts are part of this release pass.
                 </p>
               </div>
 
-              <div className="history-filters">
-                <label>
-                  Medication
-                  <select
-                    value={historyFilters.medicationId}
-                    onChange={(event) =>
-                      setHistoryFilters((current) => ({
-                        ...current,
-                        medicationId: event.target.value
-                      }))
-                    }
-                  >
-                    <option value="all">All medications</option>
-                    {medications.map((medication) => (
-                      <option key={medication.id} value={medication.id}>
-                        {medication.name}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-
-                <label>
-                  Outcome
-                  <select
-                    value={historyFilters.status}
-                    onChange={(event) =>
-                      setHistoryFilters((current) => ({
-                        ...current,
-                        status: event.target.value as HistoryStatusFilter
-                      }))
-                    }
-                  >
-                    {historyStatusOptions.map((option) => (
-                      <option key={option.value} value={option.value}>
-                        {option.label}
-                      </option>
-                    ))}
-                  </select>
-                </label>
-              </div>
-            </div>
-
-            <section className="history-summary-grid" aria-label="History summary">
-              <article className="history-stat">
-                <span>Taken</span>
-                <strong>{history.summary.completed}</strong>
-              </article>
-              <article className="history-stat">
-                <span>Missed</span>
-                <strong>{history.summary.missed}</strong>
-              </article>
-              <article className="history-stat">
-                <span>Skipped</span>
-                <strong>{history.summary.skipped}</strong>
-              </article>
-              <article className="history-stat">
-                <span>Total</span>
-                <strong>{history.summary.total}</strong>
-              </article>
+              {auditTrail.entries.length === 0 ? (
+                <div className="empty-state">
+                  <strong>No audit events yet</strong>
+                  <p>Actions like login, device registration, and reminder dispatch appear here.</p>
+                </div>
+              ) : (
+                <ul className="audit-list">
+                  {auditTrail.entries.map((entry) => (
+                    <li className="audit-item" key={entry.id}>
+                      <div>
+                        <strong>{summarizeAuditEntry(entry)}</strong>
+                        <p>{entry.type}</p>
+                      </div>
+                      <small>{formatTimestamp(entry.recordedAt)}</small>
+                    </li>
+                  ))}
+                </ul>
+              )}
             </section>
-
-            {history.history.length === 0 ? (
-              <div className="empty-state roomy">
-                <strong>No history matches these filters</strong>
-                <p>Mark a dose as taken, missed, or skipped to populate this timeline.</p>
-              </div>
-            ) : (
-              <div className="history-timeline">
-                {historyGroups.map(([date, entries]) => (
-                  <section className="history-day" key={date}>
-                    <div className="history-day-header">
-                      <h3>{date}</h3>
-                      <span>{entries.length} outcomes</span>
-                    </div>
-
-                    <ul className="history-list">
-                      {entries.map((entry) => (
-                        <li className="history-item" key={entry.id}>
-                          <div>
-                            <div className="history-item-heading">
-                              <h4>{entry.medicationName}</h4>
-                              <span>{entry.scheduledTime}</span>
-                            </div>
-                            <p>{entry.dosage}</p>
-                            {entry.reason ? <small>{entry.reason}</small> : null}
-                          </div>
-
-                          <div className="history-item-meta">
-                            <span className={`status-pill ${entry.status}`}>
-                              {formatStatusLabel(entry.status)}
-                            </span>
-                            <span>{formatActionTime(entry.actionTakenAt)}</span>
-                          </div>
-                        </li>
-                      ))}
-                    </ul>
-                  </section>
-                ))}
-              </div>
-            )}
           </section>
         </>
       )}
@@ -1570,7 +2023,8 @@ export function App() {
       <section className="footer-note">
         <strong>Backend endpoints:</strong> `GET /api/medications`, `POST /api/medications`,
         `PATCH/DELETE /api/medications/:id`, `GET /api/schedule/today`, `PATCH /api/doses/:id`,
-        `GET /api/history`
+        `GET /api/history`, `GET /api/reminders/today`, `POST /api/reminders/process`,
+        `POST /api/devices/register`, `GET /api/audit-logs`
       </section>
     </main>
   );

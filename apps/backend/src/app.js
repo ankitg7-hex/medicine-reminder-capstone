@@ -1,5 +1,12 @@
 import { randomUUID } from "node:crypto";
 import {
+  buildReminderAuditDetails,
+  buildReminderResponse,
+  generateReminderEventsForProfile,
+  processReminderQueue,
+  registerDeviceToken
+} from "./reminders.js";
+import {
   applyDoseAction,
   buildHistoryResponse,
   buildMedicationResponse,
@@ -51,18 +58,51 @@ function createStore() {
     schedules: new Map(),
     medicationScheduleIndex: new Map(),
     doseEvents: new Map(),
-    doseEventIndex: new Map()
+    doseEventIndex: new Map(),
+    reminderEvents: new Map(),
+    reminderEventIndex: new Map(),
+    deviceRegistrations: new Map(),
+    auditLogs: []
   };
 }
 
-function sendJson(res, statusCode, payload) {
+function getAllowedOrigins() {
+  return String(
+    process.env.ALLOWED_ORIGINS || "http://localhost:5173,http://127.0.0.1:5173"
+  )
+    .split(",")
+    .map((value) => value.trim())
+    .filter(Boolean);
+}
+
+function getCorsOrigin(req) {
+  const allowedOrigins = getAllowedOrigins();
+  const origin = String(req.headers.origin || "").trim();
+
+  if (origin && allowedOrigins.includes(origin)) {
+    return origin;
+  }
+
+  return allowedOrigins[0] ?? "*";
+}
+
+function sendJson(req, res, requestId, statusCode, payload) {
   res.writeHead(statusCode, {
     "content-type": "application/json",
-    "access-control-allow-origin": "*",
+    "cache-control": "no-store",
+    "x-request-id": requestId,
+    "access-control-allow-origin": getCorsOrigin(req),
+    vary: "Origin",
     "access-control-allow-headers": "content-type, authorization",
-    "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS"
+    "access-control-allow-methods": "GET, POST, PATCH, DELETE, OPTIONS",
+    "x-content-type-options": "nosniff",
+    "x-frame-options": "DENY",
+    "referrer-policy": "no-referrer",
+    "cross-origin-opener-policy": "same-origin",
+    "content-security-policy":
+      "default-src 'self'; base-uri 'self'; frame-ancestors 'none'; img-src 'self' data:; connect-src 'self'; style-src 'self' 'unsafe-inline'; script-src 'self'"
   });
-  res.end(JSON.stringify(payload));
+  res.end(statusCode === 204 ? "" : JSON.stringify(payload));
 }
 
 async function readJson(req) {
@@ -107,6 +147,31 @@ function getSessionProfile(req, store) {
     token,
     profile: store.profiles.get(userId) ?? null
   };
+}
+
+function recordAuditEvent(store, type, userId = null, details = {}) {
+  const entry = {
+    id: randomUUID(),
+    type,
+    userId,
+    details,
+    recordedAt: new Date().toISOString()
+  };
+
+  store.auditLogs.unshift(entry);
+  if (store.auditLogs.length > 200) {
+    store.auditLogs.length = 200;
+  }
+
+  return entry;
+}
+
+function buildAuditResponse(store, profile, limit = 12) {
+  const entries = store.auditLogs
+    .filter((entry) => entry.userId === null || entry.userId === profile.id)
+    .slice(0, Math.max(1, Math.min(limit, 50)));
+
+  return { entries };
 }
 
 function getMedicationForUser(store, userId, medicationId) {
@@ -188,334 +253,473 @@ function moveUserRecords(store, fromUserId, toUserId) {
       doseEvent.userId = toUserId;
     }
   }
+
+  for (const reminderEvent of store.reminderEvents.values()) {
+    if (reminderEvent.userId === fromUserId) {
+      reminderEvent.userId = toUserId;
+    }
+  }
+
+  for (const device of store.deviceRegistrations.values()) {
+    if (device.userId === fromUserId) {
+      device.userId = toUserId;
+    }
+  }
+
+  for (const entry of store.auditLogs) {
+    if (entry.userId === fromUserId) {
+      entry.userId = toUserId;
+    }
+  }
+}
+
+function ensureReminderContext(store, profile) {
+  generateDoseEventsForProfile(store, profile);
+  generateReminderEventsForProfile(store, profile);
 }
 
 export function createApp(options = {}) {
   const store = options.store ?? createStore();
 
   return async function app(req, res) {
-    const url = new URL(req.url, "http://localhost");
-    const medicationMatch = /^\/api\/medications\/([^/]+)$/.exec(url.pathname);
-    const doseMatch = /^\/api\/doses\/([^/]+)$/.exec(url.pathname);
+    const requestId = randomUUID();
 
-    if (req.method === "OPTIONS") {
-      sendJson(res, 204, {});
-      return;
-    }
+    try {
+      const url = new URL(req.url, "http://localhost");
+      const medicationMatch = /^\/api\/medications\/([^/]+)$/.exec(url.pathname);
+      const doseMatch = /^\/api\/doses\/([^/]+)$/.exec(url.pathname);
 
-    if (req.method === "GET" && url.pathname === "/health") {
-      sendJson(res, 200, { status: "ok" });
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/hello") {
-      sendJson(res, 200, {
-        message: "Hello from the medicine reminder backend",
-        milestone: 4
-      });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/auth/demo-login") {
-      const body = await readJson(req);
-      const requestedEmail = normalizeEmail(body.email) || defaultProfile.email;
-      const existingProfile = store.profiles.get(getProfileIdFromEmail(requestedEmail)) ?? null;
-      const profile = createProfileFromInput(body, existingProfile);
-
-      store.profiles.set(profile.id, profile);
-
-      const token = randomUUID();
-      store.sessions.set(token, profile.id);
-      generateDoseEventsForProfile(store, profile);
-
-      sendJson(res, 200, {
-        token,
-        profile
-      });
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/me") {
-      const session = getSessionProfile(req, store);
-
-      if (!session?.profile) {
-        sendJson(res, 401, { error: "Unauthorized" });
+      if (req.method === "OPTIONS") {
+        sendJson(req, res, requestId, 204, {});
         return;
       }
 
-      sendJson(res, 200, { profile: session.profile });
-      return;
-    }
-
-    if (req.method === "PATCH" && url.pathname === "/api/me") {
-      const session = getSessionProfile(req, store);
-
-      if (!session?.profile) {
-        sendJson(res, 401, { error: "Unauthorized" });
+      if (req.method === "GET" && url.pathname === "/health") {
+        sendJson(req, res, requestId, 200, { status: "ok" });
         return;
       }
 
-      const body = await readJson(req);
-      const previousTimezone = session.profile.timezone;
-      const nextProfile = createProfileFromInput(body, session.profile);
-
-      if (
-        nextProfile.id !== session.profile.id &&
-        store.profiles.has(nextProfile.id)
-      ) {
-        sendJson(res, 409, { error: "Email is already in use." });
-        return;
-      }
-
-      if (nextProfile.id !== session.profile.id) {
-        moveUserRecords(store, session.profile.id, nextProfile.id);
-        store.profiles.delete(session.profile.id);
-      }
-
-      store.profiles.set(nextProfile.id, nextProfile);
-      if (previousTimezone !== nextProfile.timezone) {
-        resetDoseEventsForUser(store, nextProfile.id);
-      }
-      generateDoseEventsForProfile(store, nextProfile);
-
-      sendJson(res, 200, { profile: nextProfile });
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/medications") {
-      const session = getSessionProfile(req, store);
-
-      if (!session?.profile) {
-        sendJson(res, 401, { error: "Unauthorized" });
-        return;
-      }
-
-      generateDoseEventsForProfile(store, session.profile);
-      sendJson(res, 200, {
-        medications: listMedicationResponses(
-          store,
-          session.profile.id,
-          url.searchParams.get("includeArchived") === "true"
-        )
-      });
-      return;
-    }
-
-    if (req.method === "POST" && url.pathname === "/api/medications") {
-      const session = getSessionProfile(req, store);
-
-      if (!session?.profile) {
-        sendJson(res, 401, { error: "Unauthorized" });
-        return;
-      }
-
-      const body = await readJson(req);
-      const validation = validateMedicationPayload(body);
-
-      if (!validation.valid) {
-        sendJson(res, 400, {
-          error: "Validation failed",
-          details: validation.errors
+      if (req.method === "GET" && url.pathname === "/api/hello") {
+        sendJson(req, res, requestId, 200, {
+          message: "Hello from the medicine reminder backend",
+          milestone: 7
         });
         return;
       }
 
-      const timestamp = new Date().toISOString();
-      const medication = {
-        id: randomUUID(),
-        userId: session.profile.id,
-        ...validation.medication,
-        status: "active",
-        createdAt: timestamp,
-        updatedAt: timestamp,
-        archivedAt: null
-      };
-      const schedule = {
-        id: randomUUID(),
-        medicationId: medication.id,
-        userId: session.profile.id,
-        ...validation.schedule,
-        active: true,
-        createdAt: timestamp,
-        updatedAt: timestamp
-      };
+      if (req.method === "POST" && url.pathname === "/api/auth/demo-login") {
+        const body = await readJson(req);
+        const requestedEmail = normalizeEmail(body.email) || defaultProfile.email;
+        const existingProfile = store.profiles.get(getProfileIdFromEmail(requestedEmail)) ?? null;
+        const profile = createProfileFromInput(body, existingProfile);
 
-      store.medications.set(medication.id, medication);
-      store.schedules.set(schedule.id, schedule);
-      store.medicationScheduleIndex.set(medication.id, schedule.id);
-      generateDoseEventsForProfile(store, session.profile);
+        store.profiles.set(profile.id, profile);
 
-      sendJson(res, 201, {
-        medication: buildMedicationResponse(store, medication.id)
-      });
-      return;
-    }
+        const token = randomUUID();
+        store.sessions.set(token, profile.id);
+        ensureReminderContext(store, profile);
+        recordAuditEvent(store, "session.demo_login", profile.id, {
+          email: profile.email,
+          timezone: profile.timezone
+        });
 
-    if (req.method === "GET" && medicationMatch) {
-      const session = getSessionProfile(req, store);
-
-      if (!session?.profile) {
-        sendJson(res, 401, { error: "Unauthorized" });
-        return;
-      }
-
-      const medication = getMedicationForUser(store, session.profile.id, medicationMatch[1]);
-
-      if (!medication) {
-        sendJson(res, 404, { error: "Medication not found." });
-        return;
-      }
-
-      sendJson(res, 200, {
-        medication: buildMedicationResponse(store, medication.id)
-      });
-      return;
-    }
-
-    if (req.method === "PATCH" && medicationMatch) {
-      const session = getSessionProfile(req, store);
-
-      if (!session?.profile) {
-        sendJson(res, 401, { error: "Unauthorized" });
-        return;
-      }
-
-      const medication = getMedicationForUser(store, session.profile.id, medicationMatch[1]);
-
-      if (!medication) {
-        sendJson(res, 404, { error: "Medication not found." });
-        return;
-      }
-
-      const body = await readJson(req);
-      const validation = validateMedicationPayload(buildPatchPayload(store, medication, body));
-
-      if (!validation.valid) {
-        sendJson(res, 400, {
-          error: "Validation failed",
-          details: validation.errors
+        sendJson(req, res, requestId, 200, {
+          token,
+          profile
         });
         return;
       }
 
-      const timestamp = new Date().toISOString();
-      const nextMedication = {
-        ...medication,
-        ...validation.medication,
-        updatedAt: timestamp
-      };
-      const schedule = getScheduleForMedication(store, medication.id);
-      const nextSchedule = {
-        ...(schedule ?? {
+      if (req.method === "GET" && url.pathname === "/api/me") {
+        const session = getSessionProfile(req, store);
+
+        if (!session?.profile) {
+          sendJson(req, res, requestId, 401, { error: "Unauthorized" });
+          return;
+        }
+
+        sendJson(req, res, requestId, 200, { profile: session.profile });
+        return;
+      }
+
+      if (req.method === "PATCH" && url.pathname === "/api/me") {
+        const session = getSessionProfile(req, store);
+
+        if (!session?.profile) {
+          sendJson(req, res, requestId, 401, { error: "Unauthorized" });
+          return;
+        }
+
+        const body = await readJson(req);
+        const previousTimezone = session.profile.timezone;
+        const nextProfile = createProfileFromInput(body, session.profile);
+
+        if (
+          nextProfile.id !== session.profile.id &&
+          store.profiles.has(nextProfile.id)
+        ) {
+          sendJson(req, res, requestId, 409, { error: "Email is already in use." });
+          return;
+        }
+
+        if (nextProfile.id !== session.profile.id) {
+          moveUserRecords(store, session.profile.id, nextProfile.id);
+          store.profiles.delete(session.profile.id);
+        }
+
+        store.profiles.set(nextProfile.id, nextProfile);
+        if (previousTimezone !== nextProfile.timezone) {
+          resetDoseEventsForUser(store, nextProfile.id);
+        }
+        ensureReminderContext(store, nextProfile);
+        recordAuditEvent(store, "profile.updated", nextProfile.id, {
+          email: nextProfile.email,
+          timezone: nextProfile.timezone
+        });
+
+        sendJson(req, res, requestId, 200, { profile: nextProfile });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/medications") {
+        const session = getSessionProfile(req, store);
+
+        if (!session?.profile) {
+          sendJson(req, res, requestId, 401, { error: "Unauthorized" });
+          return;
+        }
+
+        ensureReminderContext(store, session.profile);
+        sendJson(req, res, requestId, 200, {
+          medications: listMedicationResponses(
+            store,
+            session.profile.id,
+            url.searchParams.get("includeArchived") === "true"
+          )
+        });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/medications") {
+        const session = getSessionProfile(req, store);
+
+        if (!session?.profile) {
+          sendJson(req, res, requestId, 401, { error: "Unauthorized" });
+          return;
+        }
+
+        const body = await readJson(req);
+        const validation = validateMedicationPayload(body);
+
+        if (!validation.valid) {
+          sendJson(req, res, requestId, 400, {
+            error: "Validation failed",
+            details: validation.errors
+          });
+          return;
+        }
+
+        const timestamp = new Date().toISOString();
+        const medication = {
+          id: randomUUID(),
+          userId: session.profile.id,
+          ...validation.medication,
+          status: "active",
+          createdAt: timestamp,
+          updatedAt: timestamp,
+          archivedAt: null
+        };
+        const schedule = {
           id: randomUUID(),
           medicationId: medication.id,
           userId: session.profile.id,
-          createdAt: timestamp
-        }),
-        ...validation.schedule,
-        active: medication.status !== "archived",
-        updatedAt: timestamp
-      };
-
-      store.medications.set(nextMedication.id, nextMedication);
-      store.schedules.set(nextSchedule.id, nextSchedule);
-      store.medicationScheduleIndex.set(nextMedication.id, nextSchedule.id);
-      resetDoseEventsForMedication(store, nextMedication.id);
-      generateDoseEventsForProfile(store, session.profile);
-
-      sendJson(res, 200, {
-        medication: buildMedicationResponse(store, nextMedication.id)
-      });
-      return;
-    }
-
-    if (req.method === "DELETE" && medicationMatch) {
-      const session = getSessionProfile(req, store);
-
-      if (!session?.profile) {
-        sendJson(res, 401, { error: "Unauthorized" });
-        return;
-      }
-
-      const medication = getMedicationForUser(store, session.profile.id, medicationMatch[1]);
-
-      if (!medication) {
-        sendJson(res, 404, { error: "Medication not found." });
-        return;
-      }
-
-      const timestamp = new Date().toISOString();
-      const nextMedication = {
-        ...medication,
-        status: "archived",
-        archivedAt: timestamp,
-        updatedAt: timestamp
-      };
-      const schedule = getScheduleForMedication(store, medication.id);
-
-      if (schedule) {
-        store.schedules.set(schedule.id, {
-          ...schedule,
-          active: false,
+          ...validation.schedule,
+          active: true,
+          createdAt: timestamp,
           updatedAt: timestamp
+        };
+
+        store.medications.set(medication.id, medication);
+        store.schedules.set(schedule.id, schedule);
+        store.medicationScheduleIndex.set(medication.id, schedule.id);
+        ensureReminderContext(store, session.profile);
+        recordAuditEvent(store, "medication.created", session.profile.id, {
+          medicationId: medication.id,
+          medicationName: medication.name,
+          reminderTimes: schedule.times
         });
+
+        sendJson(req, res, requestId, 201, {
+          medication: buildMedicationResponse(store, medication.id)
+        });
+        return;
       }
 
-      store.medications.set(nextMedication.id, nextMedication);
-      resetDoseEventsForMedication(store, nextMedication.id);
+      if (req.method === "GET" && medicationMatch) {
+        const session = getSessionProfile(req, store);
 
-      sendJson(res, 200, {
-        medication: buildMedicationResponse(store, nextMedication.id)
+        if (!session?.profile) {
+          sendJson(req, res, requestId, 401, { error: "Unauthorized" });
+          return;
+        }
+
+        const medication = getMedicationForUser(store, session.profile.id, medicationMatch[1]);
+
+        if (!medication) {
+          sendJson(req, res, requestId, 404, { error: "Medication not found." });
+          return;
+        }
+
+        sendJson(req, res, requestId, 200, {
+          medication: buildMedicationResponse(store, medication.id)
+        });
+        return;
+      }
+
+      if (req.method === "PATCH" && medicationMatch) {
+        const session = getSessionProfile(req, store);
+
+        if (!session?.profile) {
+          sendJson(req, res, requestId, 401, { error: "Unauthorized" });
+          return;
+        }
+
+        const medication = getMedicationForUser(store, session.profile.id, medicationMatch[1]);
+
+        if (!medication) {
+          sendJson(req, res, requestId, 404, { error: "Medication not found." });
+          return;
+        }
+
+        const body = await readJson(req);
+        const validation = validateMedicationPayload(buildPatchPayload(store, medication, body));
+
+        if (!validation.valid) {
+          sendJson(req, res, requestId, 400, {
+            error: "Validation failed",
+            details: validation.errors
+          });
+          return;
+        }
+
+        const timestamp = new Date().toISOString();
+        const nextMedication = {
+          ...medication,
+          ...validation.medication,
+          updatedAt: timestamp
+        };
+        const schedule = getScheduleForMedication(store, medication.id);
+        const nextSchedule = {
+          ...(schedule ?? {
+            id: randomUUID(),
+            medicationId: medication.id,
+            userId: session.profile.id,
+            createdAt: timestamp
+          }),
+          ...validation.schedule,
+          active: medication.status !== "archived",
+          updatedAt: timestamp
+        };
+
+        store.medications.set(nextMedication.id, nextMedication);
+        store.schedules.set(nextSchedule.id, nextSchedule);
+        store.medicationScheduleIndex.set(nextMedication.id, nextSchedule.id);
+        resetDoseEventsForMedication(store, nextMedication.id);
+        ensureReminderContext(store, session.profile);
+        recordAuditEvent(store, "medication.updated", session.profile.id, {
+          medicationId: nextMedication.id,
+          medicationName: nextMedication.name
+        });
+
+        sendJson(req, res, requestId, 200, {
+          medication: buildMedicationResponse(store, nextMedication.id)
+        });
+        return;
+      }
+
+      if (req.method === "DELETE" && medicationMatch) {
+        const session = getSessionProfile(req, store);
+
+        if (!session?.profile) {
+          sendJson(req, res, requestId, 401, { error: "Unauthorized" });
+          return;
+        }
+
+        const medication = getMedicationForUser(store, session.profile.id, medicationMatch[1]);
+
+        if (!medication) {
+          sendJson(req, res, requestId, 404, { error: "Medication not found." });
+          return;
+        }
+
+        const timestamp = new Date().toISOString();
+        const nextMedication = {
+          ...medication,
+          status: "archived",
+          archivedAt: timestamp,
+          updatedAt: timestamp
+        };
+        const schedule = getScheduleForMedication(store, medication.id);
+
+        if (schedule) {
+          store.schedules.set(schedule.id, {
+            ...schedule,
+            active: false,
+            updatedAt: timestamp
+          });
+        }
+
+        store.medications.set(nextMedication.id, nextMedication);
+        resetDoseEventsForMedication(store, nextMedication.id);
+        recordAuditEvent(store, "medication.archived", session.profile.id, {
+          medicationId: nextMedication.id,
+          medicationName: nextMedication.name
+        });
+
+        sendJson(req, res, requestId, 200, {
+          medication: buildMedicationResponse(store, nextMedication.id)
+        });
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/schedule/today") {
+        const session = getSessionProfile(req, store);
+
+        if (!session?.profile) {
+          sendJson(req, res, requestId, 401, { error: "Unauthorized" });
+          return;
+        }
+
+        ensureReminderContext(store, session.profile);
+        sendJson(req, res, requestId, 200, buildTodayScheduleResponse(store, session.profile));
+        return;
+      }
+
+      if (req.method === "PATCH" && doseMatch) {
+        const session = getSessionProfile(req, store);
+
+        if (!session?.profile) {
+          sendJson(req, res, requestId, 401, { error: "Unauthorized" });
+          return;
+        }
+
+        const doseEvent = getDoseEventForUser(store, session.profile.id, doseMatch[1]);
+
+        if (!doseEvent) {
+          sendJson(req, res, requestId, 404, { error: "Dose event not found." });
+          return;
+        }
+
+        const body = await readJson(req);
+        const result = applyDoseAction(store, session.profile, doseEvent.id, body);
+
+        if (result.ok) {
+          recordAuditEvent(store, "dose.updated", session.profile.id, {
+            doseEventId: doseEvent.id,
+            status: result.body.dose.status
+          });
+        }
+
+        sendJson(req, res, requestId, result.statusCode, result.body);
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/history") {
+        const session = getSessionProfile(req, store);
+
+        if (!session?.profile) {
+          sendJson(req, res, requestId, 401, { error: "Unauthorized" });
+          return;
+        }
+
+        sendJson(req, res, requestId, 200, buildHistoryResponse(store, session.profile, buildHistoryFilters(url)));
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/reminders/today") {
+        const session = getSessionProfile(req, store);
+
+        if (!session?.profile) {
+          sendJson(req, res, requestId, 401, { error: "Unauthorized" });
+          return;
+        }
+
+        sendJson(req, res, requestId, 200, buildReminderResponse(store, session.profile));
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/reminders/process") {
+        const session = getSessionProfile(req, store);
+
+        if (!session?.profile) {
+          sendJson(req, res, requestId, 401, { error: "Unauthorized" });
+          return;
+        }
+
+        const result = processReminderQueue(store, session.profile);
+
+        recordAuditEvent(store, "reminder.worker_processed", session.profile.id, {
+          ...result.body.processed,
+          ...buildReminderAuditDetails(store, session.profile)
+        });
+
+        sendJson(req, res, requestId, result.statusCode, result.body);
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/devices/register") {
+        const session = getSessionProfile(req, store);
+
+        if (!session?.profile) {
+          sendJson(req, res, requestId, 401, { error: "Unauthorized" });
+          return;
+        }
+
+        const body = await readJson(req);
+        const result = registerDeviceToken(store, session.profile, body);
+
+        if (result.ok) {
+          recordAuditEvent(store, "device.registered", session.profile.id, {
+            deviceName: result.body.device.deviceName,
+            platform: result.body.device.platform
+          });
+        }
+
+        sendJson(req, res, requestId, result.statusCode, result.body);
+        return;
+      }
+
+      if (req.method === "GET" && url.pathname === "/api/audit-logs") {
+        const session = getSessionProfile(req, store);
+
+        if (!session?.profile) {
+          sendJson(req, res, requestId, 401, { error: "Unauthorized" });
+          return;
+        }
+
+        const limit = Number(url.searchParams.get("limit") || "12");
+        sendJson(req, res, requestId, 200, buildAuditResponse(store, session.profile, limit));
+        return;
+      }
+
+      sendJson(req, res, requestId, 404, { error: "Not found" });
+    } catch (error) {
+      const statusCode = error instanceof SyntaxError ? 400 : 500;
+
+      recordAuditEvent(store, "server.error", null, {
+        message: error instanceof Error ? error.message : "Unknown error",
+        requestId
       });
-      return;
+
+      sendJson(
+        req,
+        res,
+        requestId,
+        statusCode,
+        statusCode === 400
+          ? { error: "Invalid JSON payload." }
+          : { error: "Internal server error", requestId }
+      );
     }
-
-    if (req.method === "GET" && url.pathname === "/api/schedule/today") {
-      const session = getSessionProfile(req, store);
-
-      if (!session?.profile) {
-        sendJson(res, 401, { error: "Unauthorized" });
-        return;
-      }
-
-      sendJson(res, 200, buildTodayScheduleResponse(store, session.profile));
-      return;
-    }
-
-    if (req.method === "PATCH" && doseMatch) {
-      const session = getSessionProfile(req, store);
-
-      if (!session?.profile) {
-        sendJson(res, 401, { error: "Unauthorized" });
-        return;
-      }
-
-      const doseEvent = getDoseEventForUser(store, session.profile.id, doseMatch[1]);
-
-      if (!doseEvent) {
-        sendJson(res, 404, { error: "Dose event not found." });
-        return;
-      }
-
-      const body = await readJson(req);
-      const result = applyDoseAction(store, session.profile, doseEvent.id, body);
-
-      sendJson(res, result.statusCode, result.body);
-      return;
-    }
-
-    if (req.method === "GET" && url.pathname === "/api/history") {
-      const session = getSessionProfile(req, store);
-
-      if (!session?.profile) {
-        sendJson(res, 401, { error: "Unauthorized" });
-        return;
-      }
-
-      sendJson(res, 200, buildHistoryResponse(store, session.profile, buildHistoryFilters(url)));
-      return;
-    }
-
-    sendJson(res, 404, { error: "Not found" });
   };
 }

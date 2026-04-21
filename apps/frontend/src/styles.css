@@ -17,6 +17,7 @@
   --teal-soft: #d9f1ef;
   --rose: #ef8d66;
   --gold-soft: #fff0d8;
+  --lavender-soft: #eef0ff;
   --shadow: 0 22px 48px rgba(23, 50, 65, 0.09);
 }
 
@@ -57,8 +58,24 @@ button:disabled {
   transform: none;
 }
 
+.skip-link {
+  position: absolute;
+  top: -40px;
+  left: 14px;
+  z-index: 20;
+  padding: 10px 14px;
+  border-radius: 12px;
+  background: #173241;
+  color: #fff;
+  text-decoration: none;
+}
+
+.skip-link:focus {
+  top: 14px;
+}
+
 .app-shell {
-  max-width: 1360px;
+  max-width: 1400px;
   margin: 0 auto;
   padding: 40px 18px 64px;
 }
@@ -72,7 +89,7 @@ button:disabled {
 }
 
 .hero-copy {
-  max-width: 760px;
+  max-width: 780px;
 }
 
 .eyebrow {
@@ -101,12 +118,16 @@ button:disabled {
 .dose-copy small,
 .history-item p,
 .history-item small,
-.field-hint {
+.field-hint,
+.support-card p,
+.audit-item p,
+.reminder-item p,
+.device-item p {
   color: var(--muted);
 }
 
 .subtitle {
-  max-width: 56ch;
+  max-width: 58ch;
   margin-top: 14px;
   font-size: 1.02rem;
 }
@@ -156,7 +177,9 @@ button:disabled {
 .workspace-grid,
 .two-column-grid,
 .schedule-board,
-.history-summary-grid {
+.history-summary-grid,
+.mini-stat-grid,
+.insights-grid {
   display: grid;
   gap: 16px;
 }
@@ -167,9 +190,14 @@ button:disabled {
 }
 
 .workspace-grid {
-  grid-template-columns: minmax(0, 1.15fr) minmax(320px, 0.85fr);
+  grid-template-columns: minmax(0, 1.1fr) minmax(320px, 0.9fr);
   align-items: start;
   margin-bottom: 22px;
+}
+
+.insights-grid {
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
+  align-items: start;
 }
 
 .right-column {
@@ -183,7 +211,8 @@ button:disabled {
 
 .stat-card,
 .panel,
-.history-stat {
+.history-stat,
+.mini-stat {
   border: 1px solid var(--line);
   border-radius: 26px;
   background: var(--panel);
@@ -195,14 +224,26 @@ button:disabled {
   padding: 20px;
 }
 
-.accent-card {
-  background: linear-gradient(160deg, rgba(255, 237, 227, 0.98), rgba(255, 255, 255, 0.86));
+.mini-stat {
+  padding: 14px;
 }
 
+.mini-stat span,
+.history-stat span,
 .stat-label {
   display: block;
   color: var(--muted);
-  font-size: 0.94rem;
+  font-size: 0.92rem;
+}
+
+.mini-stat strong {
+  display: block;
+  margin-top: 8px;
+  font-size: 1.5rem;
+}
+
+.accent-card {
+  background: linear-gradient(160deg, rgba(255, 237, 227, 0.98), rgba(255, 255, 255, 0.86));
 }
 
 .stat-value {
@@ -233,6 +274,14 @@ button:disabled {
   background: linear-gradient(180deg, rgba(255, 255, 255, 0.95), rgba(244, 250, 255, 0.9));
 }
 
+.audit-panel {
+  background: linear-gradient(180deg, rgba(253, 253, 255, 0.96), rgba(242, 247, 255, 0.92));
+}
+
+.reminder-panel {
+  background: linear-gradient(180deg, rgba(250, 255, 253, 0.96), rgba(248, 250, 255, 0.92));
+}
+
 .panel-header,
 .schedule-column-header,
 .medication-item,
@@ -240,7 +289,10 @@ button:disabled {
 .history-item,
 .history-day-header,
 .dose-topline,
-.dose-meta {
+.dose-meta,
+.audit-item,
+.reminder-item,
+.device-item {
   display: flex;
   align-items: center;
   justify-content: space-between;
@@ -257,7 +309,8 @@ button:disabled {
 .medication-heading h3,
 .dose-topline h4,
 .history-day-header h3,
-.history-item-heading h4 {
+.history-item-heading h4,
+.reminder-item h3 {
   margin: 0;
 }
 
@@ -287,19 +340,27 @@ button:disabled {
   justify-content: center;
 }
 
-.status-pill.completed {
+.status-pill.completed,
+.status-pill.delivered {
   background: rgba(33, 149, 114, 0.14);
   color: #0f6b4f;
 }
 
-.status-pill.missed {
+.status-pill.missed,
+.status-pill.failed {
   background: rgba(207, 111, 84, 0.14);
   color: #8b3d2f;
 }
 
-.status-pill.skipped {
+.status-pill.skipped,
+.status-pill.queued {
   background: rgba(160, 124, 72, 0.16);
   color: #7a5721;
+}
+
+.status-pill.sent {
+  background: var(--lavender-soft);
+  color: #4452a8;
 }
 
 .form-grid,
@@ -309,7 +370,10 @@ button:disabled {
 .medication-list,
 .dose-list,
 .history-list,
-.history-timeline {
+.history-timeline,
+.audit-list,
+.reminder-list,
+.device-list {
   display: grid;
   gap: 16px;
 }
@@ -332,6 +396,10 @@ button:disabled {
   border-radius: 14px;
   background: var(--panel-strong);
   color: var(--ink);
+}
+
+.compact-form {
+  margin-top: 12px;
 }
 
 .field-hint {
@@ -420,6 +488,7 @@ button:disabled {
   color: #145b66;
 }
 
+.support-card,
 .empty-state,
 .column-empty {
   padding: 20px;
@@ -428,6 +497,7 @@ button:disabled {
   background: rgba(255, 255, 255, 0.72);
 }
 
+.support-card strong,
 .empty-state strong {
   display: block;
   margin-bottom: 6px;
@@ -439,7 +509,10 @@ button:disabled {
 
 .medication-list,
 .dose-list,
-.history-list {
+.history-list,
+.audit-list,
+.reminder-list,
+.device-list {
   list-style: none;
   margin: 0;
   padding: 0;
@@ -447,7 +520,10 @@ button:disabled {
 
 .medication-item,
 .dose-item,
-.history-item {
+.history-item,
+.audit-item,
+.reminder-item,
+.device-item {
   align-items: flex-start;
   padding: 16px;
   border-radius: 18px;
@@ -516,6 +592,11 @@ button:disabled {
   font-weight: 700;
 }
 
+.supporting-line {
+  display: block;
+  color: #466472;
+}
+
 .dose-meta {
   flex-wrap: wrap;
   color: var(--muted);
@@ -553,19 +634,14 @@ button:disabled {
   min-width: 180px;
 }
 
-.history-summary-grid {
+.history-summary-grid,
+.mini-stat-grid {
   grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
   margin-bottom: 18px;
 }
 
 .history-stat {
   padding: 16px;
-}
-
-.history-stat span {
-  display: block;
-  color: var(--muted);
-  font-size: 0.92rem;
 }
 
 .history-stat strong {
@@ -587,13 +663,24 @@ button:disabled {
   font-size: 0.92rem;
 }
 
+.audit-item strong,
+.device-item strong {
+  display: block;
+}
+
+.audit-item small,
+.device-item small {
+  color: var(--muted);
+}
+
 .footer-note {
   margin-top: 22px;
   font-size: 0.95rem;
 }
 
-@media (max-width: 1120px) {
-  .workspace-grid {
+@media (max-width: 1180px) {
+  .workspace-grid,
+  .insights-grid {
     grid-template-columns: 1fr;
   }
 
@@ -623,7 +710,10 @@ button:disabled {
   .schedule-column-header,
   .history-item,
   .time-row,
-  .dose-topline {
+  .dose-topline,
+  .audit-item,
+  .reminder-item,
+  .device-item {
     align-items: flex-start;
     flex-direction: column;
   }

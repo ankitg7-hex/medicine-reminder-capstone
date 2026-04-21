@@ -4,8 +4,8 @@ import { createServer } from "node:http";
 import { once } from "node:events";
 import { createApp } from "../src/app.js";
 
-async function withServer(run) {
-  const server = createServer(createApp());
+async function withServer(run, options = {}) {
+  const server = createServer(createApp(options));
   server.listen(0);
   await once(server, "listening");
 
@@ -80,6 +80,23 @@ test("POST /api/auth/demo-login returns token and profile", async () => {
     assert.equal(body.profile.fullName, "Ananya Rao");
     assert.equal(body.profile.email, "ananya@example.com");
     assert.equal(body.profile.timezone, "Asia/Calcutta");
+  });
+});
+
+test("security headers and CORS defaults are applied", async () => {
+  await withServer(async (baseUrl) => {
+    const response = await fetch(`${baseUrl}/health`, {
+      headers: {
+        Origin: "http://localhost:5173"
+      }
+    });
+
+    assert.equal(response.status, 200);
+    assert.equal(response.headers.get("access-control-allow-origin"), "http://localhost:5173");
+    assert.equal(response.headers.get("x-content-type-options"), "nosniff");
+    assert.equal(response.headers.get("x-frame-options"), "DENY");
+    assert.equal(response.headers.get("referrer-policy"), "no-referrer");
+    assert.match(response.headers.get("content-security-policy") || "", /default-src 'self'/);
   });
 });
 
@@ -440,6 +457,220 @@ test("PATCH /api/doses/:id records dose actions and updates history", async () =
     assert.equal(historyBody.history.length, 1);
     assert.equal(historyBody.history[0].medicationId, createBody.medication.id);
     assert.equal(historyBody.history[0].status, "completed");
+  });
+});
+
+test("device registration and reminder status endpoints work together", async () => {
+  await withServer(async (baseUrl) => {
+    const session = await createDemoSession(baseUrl);
+    const today = getTodayInKolkata();
+
+    const createResponse = await fetch(`${baseUrl}/api/medications`, {
+      method: "POST",
+      headers: session.headers,
+      body: JSON.stringify({
+        name: "Reminder Tablet",
+        dosage: "1 tablet",
+        startDate: today,
+        schedule: {
+          recurrenceType: "daily",
+          times: ["08:00"]
+        }
+      })
+    });
+
+    assert.equal(createResponse.status, 201);
+
+    const registerResponse = await fetch(`${baseUrl}/api/devices/register`, {
+      method: "POST",
+      headers: session.headers,
+      body: JSON.stringify({
+        token: "demo-device-token-001",
+        deviceName: "Priya's Pixel",
+        platform: "android"
+      })
+    });
+    const registerBody = await registerResponse.json();
+
+    assert.equal(registerResponse.status, 201);
+    assert.equal(registerBody.devices.length, 1);
+    assert.equal(registerBody.device.platform, "android");
+
+    const remindersResponse = await fetch(`${baseUrl}/api/reminders/today`, {
+      headers: {
+        authorization: session.headers.authorization
+      }
+    });
+    const remindersBody = await remindersResponse.json();
+
+    assert.equal(remindersResponse.status, 200);
+    assert.equal(remindersBody.devices.length, 1);
+    assert.equal(remindersBody.summary.total, 1);
+    assert.equal(remindersBody.reminders[0].channel, "push");
+  });
+});
+
+test("POST /api/reminders/process can auto-mark stale reminders as missed", async () => {
+  const store = {
+    sessions: new Map([["stale-token", "user:stale@example.com"]]),
+    profiles: new Map([
+      [
+        "user:stale@example.com",
+        {
+          id: "user:stale@example.com",
+          fullName: "Stale User",
+          email: "stale@example.com",
+          timezone: "Asia/Calcutta"
+        }
+      ]
+    ]),
+    medications: new Map([
+      [
+        "med-stale",
+        {
+          id: "med-stale",
+          userId: "user:stale@example.com",
+          name: "Late Tablet",
+          type: "tablet",
+          dosage: "1 tablet",
+          instructions: "After food",
+          reason: "Demo",
+          startDate: "2026-04-20",
+          endDate: null,
+          status: "active",
+          createdAt: "2026-04-20T00:00:00.000Z",
+          updatedAt: "2026-04-20T00:00:00.000Z",
+          archivedAt: null
+        }
+      ]
+    ]),
+    schedules: new Map([
+      [
+        "schedule-stale",
+        {
+          id: "schedule-stale",
+          medicationId: "med-stale",
+          userId: "user:stale@example.com",
+          recurrenceType: "daily",
+          weekdays: [],
+          times: ["08:00"],
+          active: false,
+          createdAt: "2026-04-20T00:00:00.000Z",
+          updatedAt: "2026-04-20T00:00:00.000Z"
+        }
+      ]
+    ]),
+    medicationScheduleIndex: new Map([["med-stale", "schedule-stale"]]),
+    doseEvents: new Map([
+      [
+        "dose-stale",
+        {
+          id: "dose-stale",
+          userId: "user:stale@example.com",
+          medicationId: "med-stale",
+          scheduleId: "schedule-stale",
+          scheduledAt: "2026-04-20T00:00:00.000Z",
+          status: "pending",
+          actionTakenAt: null,
+          notes: null,
+          history: [],
+          source: "schedule-generator"
+        }
+      ]
+    ]),
+    doseEventIndex: new Map([["schedule-stale:2026-04-20T00:00:00.000Z", "dose-stale"]]),
+    reminderEvents: new Map([
+      [
+        "reminder-stale",
+        {
+          id: "reminder-stale",
+          userId: "user:stale@example.com",
+          doseEventId: "dose-stale",
+          scheduledSendAt: "2026-04-20T00:00:00.000Z",
+          channel: "in-app",
+          status: "queued",
+          providerReference: null,
+          sentAt: null,
+          deliveredAt: null,
+          failedAt: null,
+          createdAt: "2026-04-20T00:00:00.000Z",
+          updatedAt: "2026-04-20T00:00:00.000Z"
+        }
+      ]
+    ]),
+    reminderEventIndex: new Map([["dose-stale", "reminder-stale"]]),
+    deviceRegistrations: new Map(),
+    auditLogs: []
+  };
+
+  await withServer(
+    async (baseUrl) => {
+      const response = await fetch(`${baseUrl}/api/reminders/process`, {
+        method: "POST",
+        headers: {
+          authorization: "Bearer stale-token",
+          "content-type": "application/json"
+        }
+      });
+      const body = await response.json();
+
+      assert.equal(response.status, 200);
+      assert.equal(body.processed.autoMissed, 1);
+
+      const historyResponse = await fetch(`${baseUrl}/api/history`, {
+        headers: {
+          authorization: "Bearer stale-token"
+        }
+      });
+      const historyBody = await historyResponse.json();
+
+      assert.equal(historyResponse.status, 200);
+      assert.equal(historyBody.summary.missed, 1);
+      assert.equal(historyBody.history[0].status, "missed");
+    },
+    { store }
+  );
+});
+
+test("GET /api/audit-logs exposes recent user activity", async () => {
+  await withServer(async (baseUrl) => {
+    const session = await createDemoSession(baseUrl);
+    const today = getTodayInKolkata();
+
+    await fetch(`${baseUrl}/api/medications`, {
+      method: "POST",
+      headers: session.headers,
+      body: JSON.stringify({
+        name: "Audit Tablet",
+        dosage: "1 tablet",
+        startDate: today,
+        schedule: {
+          recurrenceType: "daily",
+          times: ["08:00"]
+        }
+      })
+    });
+
+    await fetch(`${baseUrl}/api/devices/register`, {
+      method: "POST",
+      headers: session.headers,
+      body: JSON.stringify({
+        token: "audit-device-token",
+        deviceName: "Audit Phone",
+        platform: "android"
+      })
+    });
+
+    const auditResponse = await fetch(`${baseUrl}/api/audit-logs?limit=5`, {
+      headers: {
+        authorization: session.headers.authorization
+      }
+    });
+    const auditBody = await auditResponse.json();
+
+    assert.equal(auditResponse.status, 200);
+    assert.ok(auditBody.entries.length >= 2);
+    assert.match(auditBody.entries[0].type, /(device\.registered|medication\.created|session\.demo_login)/);
   });
 });
 
