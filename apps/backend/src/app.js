@@ -1,4 +1,12 @@
 import { randomUUID } from "node:crypto";
+import {
+  buildMedicationResponse,
+  buildTodayScheduleResponse,
+  generateDoseEventsForProfile,
+  resetDoseEventsForMedication,
+  resetDoseEventsForUser,
+  validateMedicationPayload
+} from "./scheduling.js";
 
 const defaultProfile = {
   id: "demo-user",
@@ -7,11 +15,40 @@ const defaultProfile = {
   timezone: "Asia/Calcutta"
 };
 
+function normalizeEmail(value) {
+  return String(value || "").trim().toLowerCase();
+}
+
+function getProfileIdFromEmail(email) {
+  return `user:${normalizeEmail(email)}`;
+}
+
+function createProfileFromInput(input, currentProfile = null) {
+  const email = normalizeEmail(input.email) || normalizeEmail(currentProfile?.email) || defaultProfile.email;
+  const fullName = String(input.fullName || "").trim() || currentProfile?.fullName || defaultProfile.fullName;
+  const timezone =
+    String(input.timezone || "").trim() || currentProfile?.timezone || defaultProfile.timezone;
+
+  return {
+    ...(currentProfile ?? defaultProfile),
+    id: getProfileIdFromEmail(email),
+    fullName,
+    email,
+    timezone
+  };
+}
+
 function createStore() {
+  const seededProfile = createProfileFromInput(defaultProfile);
+
   return {
     sessions: new Map(),
-    profiles: new Map([[defaultProfile.id, { ...defaultProfile }]]),
-    medications: new Map()
+    profiles: new Map([[seededProfile.id, seededProfile]]),
+    medications: new Map(),
+    schedules: new Map(),
+    medicationScheduleIndex: new Map(),
+    doseEvents: new Map(),
+    doseEventIndex: new Map()
   };
 }
 
@@ -69,53 +106,6 @@ function getSessionProfile(req, store) {
   };
 }
 
-function normalizeMedicationInput(input, currentMedication) {
-  const name = String(input.name ?? currentMedication?.name ?? "").trim();
-  const dosage = String(input.dosage ?? currentMedication?.dosage ?? "").trim();
-  const type = String(input.type ?? currentMedication?.type ?? "tablet").trim();
-  const instructions = String(
-    input.instructions ?? currentMedication?.instructions ?? ""
-  ).trim();
-  const reason = String(input.reason ?? currentMedication?.reason ?? "").trim();
-  const startDate = String(
-    input.startDate ?? currentMedication?.startDate ?? ""
-  ).trim();
-  const endDate = String(input.endDate ?? currentMedication?.endDate ?? "").trim();
-
-  if (!name) {
-    return { error: "Medication name is required." };
-  }
-
-  if (!dosage) {
-    return { error: "Dosage is required." };
-  }
-
-  if (!startDate) {
-    return { error: "Start date is required." };
-  }
-
-  if (endDate && startDate > endDate) {
-    return { error: "End date must be on or after the start date." };
-  }
-
-  return {
-    name,
-    dosage,
-    type: type || "tablet",
-    instructions,
-    reason,
-    startDate,
-    endDate
-  };
-}
-
-function listUserMedications(store, userId, includeArchived) {
-  return [...store.medications.values()]
-    .filter((medication) => medication.userId === userId)
-    .filter((medication) => includeArchived || medication.status !== "archived")
-    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt));
-}
-
 function getMedicationForUser(store, userId, medicationId) {
   const medication = store.medications.get(medicationId);
 
@@ -126,12 +116,74 @@ function getMedicationForUser(store, userId, medicationId) {
   return medication;
 }
 
+function getScheduleForMedication(store, medicationId) {
+  const scheduleId = store.medicationScheduleIndex.get(medicationId);
+  return scheduleId ? store.schedules.get(scheduleId) ?? null : null;
+}
+
+function listMedicationResponses(store, userId, includeArchived = false) {
+  return [...store.medications.values()]
+    .filter((medication) => medication.userId === userId)
+    .filter((medication) => includeArchived || medication.status !== "archived")
+    .sort((left, right) => right.updatedAt.localeCompare(left.updatedAt))
+    .map((medication) => buildMedicationResponse(store, medication.id));
+}
+
+function buildPatchPayload(store, medication, body) {
+  const schedule = getScheduleForMedication(store, medication.id);
+  const nextScheduleInput =
+    body.schedule && typeof body.schedule === "object" ? body.schedule : {};
+
+  return {
+    name: body.name ?? medication.name,
+    type: body.type ?? medication.type,
+    dosage: body.dosage ?? medication.dosage,
+    instructions: body.instructions ?? medication.instructions,
+    reason: body.reason ?? medication.reason,
+    startDate: body.startDate ?? medication.startDate,
+    endDate:
+      body.endDate !== undefined ? body.endDate : medication.endDate ?? "",
+    schedule: {
+      recurrenceType:
+        nextScheduleInput.recurrenceType ?? schedule?.recurrenceType ?? "daily",
+      weekdays: nextScheduleInput.weekdays ?? schedule?.weekdays ?? [],
+      times: nextScheduleInput.times ?? schedule?.times ?? []
+    }
+  };
+}
+
+function moveUserRecords(store, fromUserId, toUserId) {
+  for (const [token, sessionUserId] of store.sessions.entries()) {
+    if (sessionUserId === fromUserId) {
+      store.sessions.set(token, toUserId);
+    }
+  }
+
+  for (const medication of store.medications.values()) {
+    if (medication.userId === fromUserId) {
+      medication.userId = toUserId;
+    }
+  }
+
+  for (const schedule of store.schedules.values()) {
+    if (schedule.userId === fromUserId) {
+      schedule.userId = toUserId;
+    }
+  }
+
+  for (const doseEvent of store.doseEvents.values()) {
+    if (doseEvent.userId === fromUserId) {
+      doseEvent.userId = toUserId;
+    }
+  }
+}
+
 export function createApp(options = {}) {
   const store = options.store ?? createStore();
 
   return async function app(req, res) {
     const url = new URL(req.url, "http://localhost");
-    const medicationMatch = url.pathname.match(/^\/api\/medications\/([^/]+)$/);
+    const medicationMatch = /^\/api\/medications\/([^/]+)$/.exec(url.pathname);
 
     if (req.method === "OPTIONS") {
       sendJson(res, 204, {});
@@ -146,29 +198,22 @@ export function createApp(options = {}) {
     if (req.method === "GET" && url.pathname === "/api/hello") {
       sendJson(res, 200, {
         message: "Hello from the medicine reminder backend",
-        milestone: 3
+        milestone: 4
       });
       return;
     }
 
     if (req.method === "POST" && url.pathname === "/api/auth/demo-login") {
       const body = await readJson(req);
-      const fullName = String(body.fullName || "").trim() || defaultProfile.fullName;
-      const email = String(body.email || "").trim() || defaultProfile.email;
-      const timezone =
-        String(body.timezone || "").trim() || defaultProfile.timezone;
-
-      const profile = {
-        ...defaultProfile,
-        fullName,
-        email,
-        timezone
-      };
+      const requestedEmail = normalizeEmail(body.email) || defaultProfile.email;
+      const existingProfile = store.profiles.get(getProfileIdFromEmail(requestedEmail)) ?? null;
+      const profile = createProfileFromInput(body, existingProfile);
 
       store.profiles.set(profile.id, profile);
 
       const token = randomUUID();
       store.sessions.set(token, profile.id);
+      generateDoseEventsForProfile(store, profile);
 
       sendJson(res, 200, {
         token,
@@ -198,20 +243,33 @@ export function createApp(options = {}) {
       }
 
       const body = await readJson(req);
-      const nextProfile = {
-        ...session.profile,
-        fullName: String(body.fullName || session.profile.fullName).trim(),
-        email: String(body.email || session.profile.email).trim(),
-        timezone: String(body.timezone || session.profile.timezone).trim()
-      };
+      const previousTimezone = session.profile.timezone;
+      const nextProfile = createProfileFromInput(body, session.profile);
+
+      if (
+        nextProfile.id !== session.profile.id &&
+        store.profiles.has(nextProfile.id)
+      ) {
+        sendJson(res, 409, { error: "Email is already in use." });
+        return;
+      }
+
+      if (nextProfile.id !== session.profile.id) {
+        moveUserRecords(store, session.profile.id, nextProfile.id);
+        store.profiles.delete(session.profile.id);
+      }
 
       store.profiles.set(nextProfile.id, nextProfile);
+      if (previousTimezone !== nextProfile.timezone) {
+        resetDoseEventsForUser(store, nextProfile.id);
+      }
+      generateDoseEventsForProfile(store, nextProfile);
 
       sendJson(res, 200, { profile: nextProfile });
       return;
     }
 
-    if (url.pathname.startsWith("/api/medications")) {
+    if (req.method === "GET" && url.pathname === "/api/medications") {
       const session = getSessionProfile(req, store);
 
       if (!session?.profile) {
@@ -219,94 +277,196 @@ export function createApp(options = {}) {
         return;
       }
 
-      if (req.method === "GET" && url.pathname === "/api/medications") {
-        const includeArchived = url.searchParams.get("includeArchived") === "true";
-        const medications = listUserMedications(
+      generateDoseEventsForProfile(store, session.profile);
+      sendJson(res, 200, {
+        medications: listMedicationResponses(
           store,
           session.profile.id,
-          includeArchived
-        );
+          url.searchParams.get("includeArchived") === "true"
+        )
+      });
+      return;
+    }
 
-        sendJson(res, 200, { medications });
+    if (req.method === "POST" && url.pathname === "/api/medications") {
+      const session = getSessionProfile(req, store);
+
+      if (!session?.profile) {
+        sendJson(res, 401, { error: "Unauthorized" });
         return;
       }
 
-      if (req.method === "POST" && url.pathname === "/api/medications") {
-        const body = await readJson(req);
-        const normalized = normalizeMedicationInput(body);
+      const body = await readJson(req);
+      const validation = validateMedicationPayload(body);
 
-        if ("error" in normalized) {
-          sendJson(res, 400, { error: normalized.error });
-          return;
-        }
+      if (!validation.valid) {
+        sendJson(res, 400, {
+          error: "Validation failed",
+          details: validation.errors
+        });
+        return;
+      }
 
-        const now = new Date().toISOString();
-        const medication = {
+      const timestamp = new Date().toISOString();
+      const medication = {
+        id: randomUUID(),
+        userId: session.profile.id,
+        ...validation.medication,
+        status: "active",
+        createdAt: timestamp,
+        updatedAt: timestamp,
+        archivedAt: null
+      };
+      const schedule = {
+        id: randomUUID(),
+        medicationId: medication.id,
+        userId: session.profile.id,
+        ...validation.schedule,
+        active: true,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      };
+
+      store.medications.set(medication.id, medication);
+      store.schedules.set(schedule.id, schedule);
+      store.medicationScheduleIndex.set(medication.id, schedule.id);
+      generateDoseEventsForProfile(store, session.profile);
+
+      sendJson(res, 201, {
+        medication: buildMedicationResponse(store, medication.id)
+      });
+      return;
+    }
+
+    if (req.method === "GET" && medicationMatch) {
+      const session = getSessionProfile(req, store);
+
+      if (!session?.profile) {
+        sendJson(res, 401, { error: "Unauthorized" });
+        return;
+      }
+
+      const medication = getMedicationForUser(store, session.profile.id, medicationMatch[1]);
+
+      if (!medication) {
+        sendJson(res, 404, { error: "Medication not found." });
+        return;
+      }
+
+      sendJson(res, 200, {
+        medication: buildMedicationResponse(store, medication.id)
+      });
+      return;
+    }
+
+    if (req.method === "PATCH" && medicationMatch) {
+      const session = getSessionProfile(req, store);
+
+      if (!session?.profile) {
+        sendJson(res, 401, { error: "Unauthorized" });
+        return;
+      }
+
+      const medication = getMedicationForUser(store, session.profile.id, medicationMatch[1]);
+
+      if (!medication) {
+        sendJson(res, 404, { error: "Medication not found." });
+        return;
+      }
+
+      const body = await readJson(req);
+      const validation = validateMedicationPayload(buildPatchPayload(store, medication, body));
+
+      if (!validation.valid) {
+        sendJson(res, 400, {
+          error: "Validation failed",
+          details: validation.errors
+        });
+        return;
+      }
+
+      const timestamp = new Date().toISOString();
+      const nextMedication = {
+        ...medication,
+        ...validation.medication,
+        updatedAt: timestamp
+      };
+      const schedule = getScheduleForMedication(store, medication.id);
+      const nextSchedule = {
+        ...(schedule ?? {
           id: randomUUID(),
+          medicationId: medication.id,
           userId: session.profile.id,
-          ...normalized,
-          status: "active",
-          createdAt: now,
-          updatedAt: now,
-          archivedAt: null
-        };
+          createdAt: timestamp
+        }),
+        ...validation.schedule,
+        active: medication.status !== "archived",
+        updatedAt: timestamp
+      };
 
-        store.medications.set(medication.id, medication);
+      store.medications.set(nextMedication.id, nextMedication);
+      store.schedules.set(nextSchedule.id, nextSchedule);
+      store.medicationScheduleIndex.set(nextMedication.id, nextSchedule.id);
+      resetDoseEventsForMedication(store, nextMedication.id);
+      generateDoseEventsForProfile(store, session.profile);
 
-        sendJson(res, 201, { medication });
+      sendJson(res, 200, {
+        medication: buildMedicationResponse(store, nextMedication.id)
+      });
+      return;
+    }
+
+    if (req.method === "DELETE" && medicationMatch) {
+      const session = getSessionProfile(req, store);
+
+      if (!session?.profile) {
+        sendJson(res, 401, { error: "Unauthorized" });
         return;
       }
 
-      if (medicationMatch) {
-        const medication = getMedicationForUser(
-          store,
-          session.profile.id,
-          medicationMatch[1]
-        );
+      const medication = getMedicationForUser(store, session.profile.id, medicationMatch[1]);
 
-        if (!medication) {
-          sendJson(res, 404, { error: "Medication not found." });
-          return;
-        }
-
-        if (req.method === "GET") {
-          sendJson(res, 200, { medication });
-          return;
-        }
-
-        if (req.method === "PATCH") {
-          const body = await readJson(req);
-          const normalized = normalizeMedicationInput(body, medication);
-
-          if ("error" in normalized) {
-            sendJson(res, 400, { error: normalized.error });
-            return;
-          }
-
-          const nextMedication = {
-            ...medication,
-            ...normalized,
-            updatedAt: new Date().toISOString()
-          };
-
-          store.medications.set(nextMedication.id, nextMedication);
-          sendJson(res, 200, { medication: nextMedication });
-          return;
-        }
-
-        if (req.method === "DELETE") {
-          const nextMedication = {
-            ...medication,
-            status: "archived",
-            archivedAt: new Date().toISOString(),
-            updatedAt: new Date().toISOString()
-          };
-
-          store.medications.set(nextMedication.id, nextMedication);
-          sendJson(res, 200, { medication: nextMedication });
-          return;
-        }
+      if (!medication) {
+        sendJson(res, 404, { error: "Medication not found." });
+        return;
       }
+
+      const timestamp = new Date().toISOString();
+      const nextMedication = {
+        ...medication,
+        status: "archived",
+        archivedAt: timestamp,
+        updatedAt: timestamp
+      };
+      const schedule = getScheduleForMedication(store, medication.id);
+
+      if (schedule) {
+        store.schedules.set(schedule.id, {
+          ...schedule,
+          active: false,
+          updatedAt: timestamp
+        });
+      }
+
+      store.medications.set(nextMedication.id, nextMedication);
+      resetDoseEventsForMedication(store, nextMedication.id);
+
+      sendJson(res, 200, {
+        medication: buildMedicationResponse(store, nextMedication.id)
+      });
+      return;
+    }
+
+    if (req.method === "GET" && url.pathname === "/api/schedule/today") {
+      const session = getSessionProfile(req, store);
+
+      if (!session?.profile) {
+        sendJson(res, 401, { error: "Unauthorized" });
+        return;
+      }
+
+      sendJson(res, 200, buildTodayScheduleResponse(store, session.profile));
+      return;
     }
 
     sendJson(res, 404, { error: "Not found" });

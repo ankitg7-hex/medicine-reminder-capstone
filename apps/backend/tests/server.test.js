@@ -20,7 +20,7 @@ async function withServer(run) {
   }
 }
 
-async function createDemoSession(baseUrl) {
+async function createDemoSession(baseUrl, overrides = {}) {
   const loginResponse = await fetch(`${baseUrl}/api/auth/demo-login`, {
     method: "POST",
     headers: {
@@ -29,7 +29,8 @@ async function createDemoSession(baseUrl) {
     body: JSON.stringify({
       fullName: "Priya Singh",
       email: "priya@example.com",
-      timezone: "Asia/Calcutta"
+      timezone: "Asia/Calcutta",
+      ...overrides
     })
   });
   const loginBody = await loginResponse.json();
@@ -41,6 +42,12 @@ async function createDemoSession(baseUrl) {
       "content-type": "application/json"
     }
   };
+}
+
+function getTodayInKolkata() {
+  return new Date().toLocaleDateString("en-CA", {
+    timeZone: "Asia/Calcutta"
+  });
 }
 
 test("GET /health returns ok", async () => {
@@ -120,6 +127,7 @@ test("GET and PATCH /api/me work after demo login", async () => {
 test("medication CRUD supports create, list, read, update, and archive", async () => {
   await withServer(async (baseUrl) => {
     const session = await createDemoSession(baseUrl);
+    const today = getTodayInKolkata();
 
     const createResponse = await fetch(`${baseUrl}/api/medications`, {
       method: "POST",
@@ -130,8 +138,12 @@ test("medication CRUD supports create, list, read, update, and archive", async (
         type: "capsule",
         instructions: "After breakfast",
         reason: "Bone health",
-        startDate: "2026-04-20",
-        endDate: "2026-05-20"
+        startDate: today,
+        endDate: "2026-05-20",
+        schedule: {
+          recurrenceType: "daily",
+          times: ["08:00"]
+        }
       })
     });
     const createBody = await createResponse.json();
@@ -176,6 +188,7 @@ test("medication CRUD supports create, list, read, update, and archive", async (
     assert.equal(updateResponse.status, 200);
     assert.equal(updateBody.medication.dosage, "2 capsules");
     assert.equal(updateBody.medication.instructions, "After dinner");
+    assert.deepEqual(updateBody.medication.schedule.times, ["08:00"]);
 
     const archiveResponse = await fetch(`${baseUrl}/api/medications/${medicationId}`, {
       method: "DELETE",
@@ -212,7 +225,7 @@ test("medication CRUD supports create, list, read, update, and archive", async (
   });
 });
 
-test("medication create validates required fields", async () => {
+test("POST /api/medications validates schedule inputs", async () => {
   await withServer(async (baseUrl) => {
     const session = await createDemoSession(baseUrl);
 
@@ -220,14 +233,183 @@ test("medication create validates required fields", async () => {
       method: "POST",
       headers: session.headers,
       body: JSON.stringify({
-        name: "",
-        dosage: "",
-        startDate: ""
+        name: "Vitamin C",
+        dosage: "1 tablet",
+        startDate: "2026-04-20",
+        schedule: {
+          recurrenceType: "selected-weekdays",
+          weekdays: [],
+          times: ["08:00"]
+        }
       })
     });
     const body = await response.json();
 
     assert.equal(response.status, 400);
-    assert.equal(body.error, "Medication name is required.");
+    assert.equal(body.error, "Validation failed");
+    assert.match(body.details[0], /weekday/i);
+  });
+});
+
+test("medication create/list and today's schedule work together", async () => {
+  await withServer(async (baseUrl) => {
+    const session = await createDemoSession(baseUrl);
+    const today = getTodayInKolkata();
+
+    const createResponse = await fetch(`${baseUrl}/api/medications`, {
+      method: "POST",
+      headers: session.headers,
+      body: JSON.stringify({
+        name: "Blood Pressure Tablet",
+        type: "tablet",
+        dosage: "1 tablet",
+        instructions: "After breakfast",
+        reason: "Daily blood pressure support",
+        startDate: today,
+        schedule: {
+          recurrenceType: "daily",
+          times: ["08:00", "20:00"]
+        }
+      })
+    });
+    const createBody = await createResponse.json();
+
+    assert.equal(createResponse.status, 201);
+    assert.equal(createBody.medication.name, "Blood Pressure Tablet");
+    assert.deepEqual(createBody.medication.schedule.times, ["08:00", "20:00"]);
+
+    const listResponse = await fetch(`${baseUrl}/api/medications`, {
+      headers: {
+        authorization: session.headers.authorization
+      }
+    });
+    const listBody = await listResponse.json();
+
+    assert.equal(listResponse.status, 200);
+    assert.equal(listBody.medications.length, 1);
+    assert.equal(listBody.medications[0].name, "Blood Pressure Tablet");
+
+    const scheduleResponse = await fetch(`${baseUrl}/api/schedule/today`, {
+      headers: {
+        authorization: session.headers.authorization
+      }
+    });
+    const scheduleBody = await scheduleResponse.json();
+
+    assert.equal(scheduleResponse.status, 200);
+    assert.equal(scheduleBody.timezone, "Asia/Calcutta");
+    assert.equal(scheduleBody.date, today);
+    assert.equal(scheduleBody.summary.total, 2);
+    assert.equal(
+      scheduleBody.groups.dueNow.length + scheduleBody.groups.upcoming.length,
+      2
+    );
+    assert.equal(scheduleBody.groups.completed.length, 0);
+    assert.equal(scheduleBody.groups.missed.length, 0);
+  });
+});
+
+test("PATCH /api/medications regenerates the daily schedule", async () => {
+  await withServer(async (baseUrl) => {
+    const session = await createDemoSession(baseUrl);
+    const today = getTodayInKolkata();
+
+    const createResponse = await fetch(`${baseUrl}/api/medications`, {
+      method: "POST",
+      headers: session.headers,
+      body: JSON.stringify({
+        name: "Calcium",
+        dosage: "1 tablet",
+        startDate: today,
+        schedule: {
+          recurrenceType: "daily",
+          times: ["08:00"]
+        }
+      })
+    });
+    const createBody = await createResponse.json();
+
+    const patchResponse = await fetch(
+      `${baseUrl}/api/medications/${createBody.medication.id}`,
+      {
+        method: "PATCH",
+        headers: session.headers,
+        body: JSON.stringify({
+          schedule: {
+            recurrenceType: "daily",
+            times: ["09:30", "21:30"]
+          }
+        })
+      }
+    );
+    const patchBody = await patchResponse.json();
+
+    assert.equal(patchResponse.status, 200);
+    assert.deepEqual(patchBody.medication.schedule.times, ["09:30", "21:30"]);
+
+    const scheduleResponse = await fetch(`${baseUrl}/api/schedule/today`, {
+      headers: {
+        authorization: session.headers.authorization
+      }
+    });
+    const scheduleBody = await scheduleResponse.json();
+    const times = [
+      ...scheduleBody.groups.dueNow.map((entry) => entry.scheduledTime),
+      ...scheduleBody.groups.upcoming.map((entry) => entry.scheduledTime)
+    ];
+
+    assert.equal(scheduleBody.summary.total, 2);
+    assert.equal(times.includes("8:00 AM"), false);
+    assert.equal(
+      times.includes("9:30 AM") || times.includes("9:30 PM"),
+      true
+    );
+  });
+});
+
+test("medication plans are isolated by logged in email", async () => {
+  await withServer(async (baseUrl) => {
+    const firstSession = await createDemoSession(baseUrl, {
+      fullName: "Asha",
+      email: "asha@example.com"
+    });
+    const secondSession = await createDemoSession(baseUrl, {
+      fullName: "Ravi",
+      email: "ravi@example.com"
+    });
+    const today = getTodayInKolkata();
+
+    const createResponse = await fetch(`${baseUrl}/api/medications`, {
+      method: "POST",
+      headers: firstSession.headers,
+      body: JSON.stringify({
+        name: "Vitamin D",
+        dosage: "1 capsule",
+        startDate: today,
+        schedule: {
+          recurrenceType: "daily",
+          times: ["08:00"]
+        }
+      })
+    });
+
+    assert.equal(createResponse.status, 201);
+
+    const firstListResponse = await fetch(`${baseUrl}/api/medications`, {
+      headers: {
+        authorization: firstSession.headers.authorization
+      }
+    });
+    const firstListBody = await firstListResponse.json();
+
+    const secondListResponse = await fetch(`${baseUrl}/api/medications`, {
+      headers: {
+        authorization: secondSession.headers.authorization
+      }
+    });
+    const secondListBody = await secondListResponse.json();
+
+    assert.equal(firstListBody.medications.length, 1);
+    assert.equal(secondListBody.medications.length, 0);
   });
 });
