@@ -1,0 +1,4 @@
+interface:
+  display_name: "Medicine Reminder Backend"
+  short_description: "Work on the API and SQLite backend"
+  default_prompt: "Use $medicine-reminder-backend to work on auth, profile, SQLite storage, API routes, medications, scheduling, reminders, history, audit logs, and backend tests in the Medicine Reminder App."

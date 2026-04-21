@@ -154,6 +154,11 @@ button:disabled {
   font-size: 1.35rem;
 }
 
+.hero-chip small {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
 .feature-menu {
   position: sticky;
   top: 14px;
@@ -196,6 +201,29 @@ button:disabled {
 
 .menu-spacer {
   flex: 1 1 auto;
+}
+
+.menu-profile {
+  display: grid;
+  gap: 2px;
+  min-width: 170px;
+  padding: 8px 14px;
+  border: 1px solid rgba(23, 50, 65, 0.08);
+  border-radius: 18px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+}
+
+.menu-profile span {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+}
+
+.menu-profile strong {
+  font-size: 0.98rem;
 }
 
 .menu-link-button {
@@ -797,5 +825,9 @@ button:disabled {
 
   .menu-spacer {
     display: none;
+  }
+
+  .menu-profile {
+    min-width: 100%;
   }
 }

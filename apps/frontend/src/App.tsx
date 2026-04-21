@@ -635,6 +635,20 @@ function summarizeAuditEntry(entry: AuditEntry) {
   }
 }
 
+function getProfileDisplayName(profile: Profile | null) {
+  if (!profile) {
+    return "";
+  }
+
+  const username = profile.username.trim();
+
+  if (username) {
+    return username;
+  }
+
+  return profile.email.trim();
+}
+
 export function App() {
   const [token, setToken] = useState<string | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
@@ -684,6 +698,7 @@ export function App() {
       )
     : medicineCatalog.slice(0, 6);
   const historyGroups = groupHistoryEntries(history.history);
+  const profileDisplayName = getProfileDisplayName(profile);
 
   useEffect(() => {
     const savedToken = window.localStorage.getItem(sessionStorageKey);
@@ -1192,8 +1207,18 @@ export function App() {
         </div>
 
         <div className="hero-chip">
-          <span>Medication reminders</span>
-          <strong>Today's care plan</strong>
+          {profile ? (
+            <>
+              <span>Signed in as</span>
+              <strong>{profileDisplayName}</strong>
+              <small>{profile.email}</small>
+            </>
+          ) : (
+            <>
+              <span>Medication reminders</span>
+              <strong>Today's care plan</strong>
+            </>
+          )}
         </div>
       </section>
 
@@ -1367,6 +1392,10 @@ export function App() {
               </button>
             ))}
             <div className="menu-spacer" />
+            <div aria-label="Signed-in profile" className="menu-profile">
+              <span>Signed in as</span>
+              <strong>{profileDisplayName}</strong>
+            </div>
             <button className="menu-link menu-link-button" onClick={handleLogout} type="button">
               Sign Out
             </button>
