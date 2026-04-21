@@ -10,6 +10,9 @@
     "dev:frontend": "npm run dev --workspace frontend",
     "dev:backend": "npm run dev --workspace backend",
     "build": "npm run build --workspace frontend && npm run build --workspace backend",
-    "test": "npm run test --workspace frontend && npm run test --workspace backend"
+    "test": "npm run test --workspace frontend && npm run test --workspace backend",
+    "check:secrets": "node scripts/check-secrets.mjs",
+    "check:deps": "node scripts/check-dependencies.mjs",
+    "verify:release": "npm run check:secrets && npm run build && npm run test"
   }
 }

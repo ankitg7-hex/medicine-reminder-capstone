@@ -65,11 +65,11 @@ function getZonedParts(date, timeZone) {
   };
 }
 
-function formatDateInTimeZone(date, timeZone) {
+export function formatDateInTimeZone(date, timeZone) {
   return formatDateParts(getZonedParts(date, timeZone));
 }
 
-function formatDisplayTime(date, timeZone) {
+export function formatDisplayTime(date, timeZone) {
   return new Intl.DateTimeFormat("en-US", {
     timeZone,
     hour: "numeric",
@@ -142,7 +142,28 @@ function normalizeString(value) {
   return String(value || "").trim();
 }
 
-function buildDoseSummary(profile, medication, doseEvent) {
+function buildReminderSummary(store, doseEvent, profile) {
+  const reminderEventId = store.reminderEventIndex?.get(doseEvent.id);
+  const reminderEvent = reminderEventId ? store.reminderEvents?.get(reminderEventId) ?? null : null;
+
+  if (!reminderEvent) {
+    return null;
+  }
+
+  return {
+    id: reminderEvent.id,
+    scheduledSendAt: reminderEvent.scheduledSendAt,
+    scheduledSendTime: formatDisplayTime(new Date(reminderEvent.scheduledSendAt), profile.timezone),
+    status: reminderEvent.status,
+    channel: reminderEvent.channel,
+    providerReference: reminderEvent.providerReference ?? null,
+    sentAt: reminderEvent.sentAt ?? null,
+    deliveredAt: reminderEvent.deliveredAt ?? null,
+    failedAt: reminderEvent.failedAt ?? null
+  };
+}
+
+function buildDoseSummary(store, profile, medication, doseEvent) {
   const scheduledDate = formatDateInTimeZone(new Date(doseEvent.scheduledAt), profile.timezone);
 
   return {
@@ -157,7 +178,8 @@ function buildDoseSummary(profile, medication, doseEvent) {
     scheduledTime: formatDisplayTime(new Date(doseEvent.scheduledAt), profile.timezone),
     status: doseEvent.status,
     actionTakenAt: doseEvent.actionTakenAt,
-    notes: doseEvent.notes ?? null
+    notes: doseEvent.notes ?? null,
+    reminder: buildReminderSummary(store, doseEvent, profile)
   };
 }
 
@@ -267,6 +289,13 @@ export function resetDoseEventsForMedication(store, medicationId) {
       continue;
     }
 
+    const reminderEventId = store.reminderEventIndex?.get(id);
+
+    if (reminderEventId) {
+      store.reminderEvents?.delete(reminderEventId);
+      store.reminderEventIndex?.delete(id);
+    }
+
     store.doseEventIndex.delete(`${doseEvent.scheduleId}:${doseEvent.scheduledAt}`);
     store.doseEvents.delete(id);
   }
@@ -328,6 +357,8 @@ export function generateDoseEventsForProfile(store, profile, now = new Date()) {
             scheduledAt,
             status: "pending",
             actionTakenAt: null,
+            notes: null,
+            history: [],
             source: "schedule-generator"
           };
 
@@ -433,7 +464,7 @@ export function applyDoseAction(store, profile, doseEventId, payload, now = new 
     ok: true,
     statusCode: 200,
     body: {
-      dose: buildDoseSummary(profile, medication, nextDoseEvent)
+      dose: buildDoseSummary(store, profile, medication, nextDoseEvent)
     }
   };
 }
@@ -465,7 +496,7 @@ export function buildTodayScheduleResponse(store, profile, now = new Date()) {
       continue;
     }
 
-    const doseSummary = buildDoseSummary(profile, medication, doseEvent);
+    const doseSummary = buildDoseSummary(store, profile, medication, doseEvent);
 
     if (doseEvent.status === "completed") {
       groups.completed.push(doseSummary);
@@ -527,7 +558,7 @@ export function buildHistoryResponse(store, profile, filters = {}) {
       continue;
     }
 
-    const entry = buildDoseSummary(profile, medication, doseEvent);
+    const entry = buildDoseSummary(store, profile, medication, doseEvent);
 
     if (medicationFilter && entry.medicationId !== medicationFilter) {
       continue;
