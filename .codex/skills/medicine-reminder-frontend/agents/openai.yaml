@@ -1,0 +1,4 @@
+interface:
+  display_name: "Medicine Reminder Frontend"
+  short_description: "Work on the React app and UI"
+  default_prompt: "Use $medicine-reminder-frontend to work on the React app shell, navigation, forms, overview page, responsive layout, and user-facing UI in the Medicine Reminder App."
