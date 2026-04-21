@@ -8,7 +8,9 @@ A starter monorepo for the medicine reminder project with:
 This repo currently includes:
 
 - Milestone 1 foundation
-- Milestone 2 demo auth and profile flow
+- persistent signup/login and profile flow
+- SQLite-backed application storage
+- tabbed dashboard with overview, medications, reminders, schedule, history, activity, and account pages
 - frontend and backend test coverage for the current scaffold
 
 ## Project Structure
@@ -56,7 +58,9 @@ Available starter endpoints:
 
 - `GET /health`
 - `GET /api/hello`
-- `POST /api/auth/demo-login`
+- `POST /api/auth/signup`
+- `POST /api/auth/login`
+- `POST /api/auth/logout`
 - `GET /api/me`
 - `PATCH /api/me`
 
@@ -114,13 +118,13 @@ Run backend build check only:
 npm run build --workspace backend
 ```
 
-## Current Demo Flow
+## Current Application Flow
 
 1. Start backend and frontend.
 2. Open `http://localhost:5173`.
-3. Use the demo sign-in form.
-4. Save the profile form after login.
-5. Review the protected profile and starter schedule panel.
+3. Create an account or sign in with existing credentials.
+4. Review the Overview dashboard.
+5. Add a medication plan and open the Schedule, Reminders, History, Activity, and Account tabs.
 
 ## Planning Docs
 

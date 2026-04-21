@@ -1,4 +1,5 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes, randomUUID, scryptSync, timingSafeEqual } from "node:crypto";
+import { createStore } from "./db.js";
 import {
   buildReminderAuditDetails,
   buildReminderResponse,
@@ -18,52 +19,123 @@ import {
   validateMedicationPayload
 } from "./scheduling.js";
 
-const defaultProfile = {
-  id: "demo-user",
-  fullName: "Care Demo User",
-  email: "demo@medireminder.local",
-  timezone: "Asia/Calcutta"
-};
+const authMinPasswordLength = 8;
 
 function normalizeEmail(value) {
   return String(value || "").trim().toLowerCase();
 }
 
-function getProfileIdFromEmail(email) {
-  return `user:${normalizeEmail(email)}`;
+function normalizeUsername(value) {
+  return String(value || "").trim();
 }
 
-function createProfileFromInput(input, currentProfile = null) {
-  const email = normalizeEmail(input.email) || normalizeEmail(currentProfile?.email) || defaultProfile.email;
-  const fullName = String(input.fullName || "").trim() || currentProfile?.fullName || defaultProfile.fullName;
-  const timezone =
-    String(input.timezone || "").trim() || currentProfile?.timezone || defaultProfile.timezone;
+function normalizeTimezone(value, fallback = "Asia/Calcutta") {
+  return String(value || "").trim() || fallback;
+}
 
+function toPublicProfile(profile) {
   return {
-    ...(currentProfile ?? defaultProfile),
-    id: getProfileIdFromEmail(email),
-    fullName,
-    email,
-    timezone
+    id: profile.id,
+    username: profile.username,
+    email: profile.email,
+    timezone: profile.timezone
   };
 }
 
-function createStore() {
-  const seededProfile = createProfileFromInput(defaultProfile);
+function hashPassword(password) {
+  const salt = randomBytes(16).toString("hex");
+  const derivedKey = scryptSync(password, salt, 64).toString("hex");
+  return `${salt}:${derivedKey}`;
+}
+
+function verifyPassword(password, storedHash) {
+  const [salt, key] = String(storedHash || "").split(":");
+
+  if (!salt || !key) {
+    return false;
+  }
+
+  const actualKey = scryptSync(password, salt, 64);
+  const expectedKey = Buffer.from(key, "hex");
+
+  return (
+    actualKey.length === expectedKey.length && timingSafeEqual(actualKey, expectedKey)
+  );
+}
+
+function validateAuthPayload(body, mode) {
+  const username = normalizeUsername(body.username);
+  const email = normalizeEmail(body.email);
+  const password = String(body.password || "");
+  const timezone = normalizeTimezone(body.timezone);
+  const errors = [];
+
+  if (mode === "signup" && !username) {
+    errors.push("Username is required.");
+  }
+
+  if (!email) {
+    errors.push("Email is required.");
+  }
+
+  if (!password) {
+    errors.push("Password is required.");
+  } else if (mode === "signup" && password.length < authMinPasswordLength) {
+    errors.push(`Password must be at least ${authMinPasswordLength} characters long.`);
+  }
+
+  if (mode === "signup" && !timezone) {
+    errors.push("Timezone is required.");
+  }
 
   return {
-    sessions: new Map(),
-    profiles: new Map([[seededProfile.id, seededProfile]]),
-    medications: new Map(),
-    schedules: new Map(),
-    medicationScheduleIndex: new Map(),
-    doseEvents: new Map(),
-    doseEventIndex: new Map(),
-    reminderEvents: new Map(),
-    reminderEventIndex: new Map(),
-    deviceRegistrations: new Map(),
-    auditLogs: []
+    valid: errors.length === 0,
+    errors,
+    profile: {
+      username,
+      email,
+      timezone
+    },
+    password
   };
+}
+
+function findProfileByEmail(store, email) {
+  const normalizedEmail = normalizeEmail(email);
+
+  for (const profile of store.profiles.values()) {
+    if (profile.email === normalizedEmail) {
+      return profile;
+    }
+  }
+
+  return null;
+}
+
+function findProfileByUsername(store, username) {
+  const normalizedUsername = normalizeUsername(username).toLowerCase();
+
+  for (const profile of store.profiles.values()) {
+    if (profile.username.toLowerCase() === normalizedUsername) {
+      return profile;
+    }
+  }
+
+  return null;
+}
+
+function buildUpdatedProfile(input, currentProfile) {
+  return {
+    ...currentProfile,
+    username: normalizeUsername(input.username) || currentProfile.username,
+    email: normalizeEmail(input.email) || currentProfile.email,
+    timezone: normalizeTimezone(input.timezone, currentProfile.timezone),
+    updatedAt: new Date().toISOString()
+  };
+}
+
+function createStoreWithOptions(options = {}) {
+  return options.store ?? createStore({ dbPath: options.dbPath });
 }
 
 function getAllowedOrigins() {
@@ -159,8 +231,11 @@ function recordAuditEvent(store, type, userId = null, details = {}) {
   };
 
   store.auditLogs.unshift(entry);
+  store.persistAuditEntry?.(entry);
+
   if (store.auditLogs.length > 200) {
     store.auditLogs.length = 200;
+    store.trimAuditLogs?.(200);
   }
 
   return entry;
@@ -229,57 +304,13 @@ function buildPatchPayload(store, medication, body) {
   };
 }
 
-function moveUserRecords(store, fromUserId, toUserId) {
-  for (const [token, sessionUserId] of store.sessions.entries()) {
-    if (sessionUserId === fromUserId) {
-      store.sessions.set(token, toUserId);
-    }
-  }
-
-  for (const medication of store.medications.values()) {
-    if (medication.userId === fromUserId) {
-      medication.userId = toUserId;
-    }
-  }
-
-  for (const schedule of store.schedules.values()) {
-    if (schedule.userId === fromUserId) {
-      schedule.userId = toUserId;
-    }
-  }
-
-  for (const doseEvent of store.doseEvents.values()) {
-    if (doseEvent.userId === fromUserId) {
-      doseEvent.userId = toUserId;
-    }
-  }
-
-  for (const reminderEvent of store.reminderEvents.values()) {
-    if (reminderEvent.userId === fromUserId) {
-      reminderEvent.userId = toUserId;
-    }
-  }
-
-  for (const device of store.deviceRegistrations.values()) {
-    if (device.userId === fromUserId) {
-      device.userId = toUserId;
-    }
-  }
-
-  for (const entry of store.auditLogs) {
-    if (entry.userId === fromUserId) {
-      entry.userId = toUserId;
-    }
-  }
-}
-
 function ensureReminderContext(store, profile) {
   generateDoseEventsForProfile(store, profile);
   generateReminderEventsForProfile(store, profile);
 }
 
 export function createApp(options = {}) {
-  const store = options.store ?? createStore();
+  const store = createStoreWithOptions(options);
 
   return async function app(req, res) {
     const requestId = randomUUID();
@@ -302,30 +333,92 @@ export function createApp(options = {}) {
       if (req.method === "GET" && url.pathname === "/api/hello") {
         sendJson(req, res, requestId, 200, {
           message: "Hello from the medicine reminder backend",
-          milestone: 7
+          environment: "production-ready-local"
         });
         return;
       }
 
-      if (req.method === "POST" && url.pathname === "/api/auth/demo-login") {
+      if (req.method === "POST" && url.pathname === "/api/auth/signup") {
         const body = await readJson(req);
-        const requestedEmail = normalizeEmail(body.email) || defaultProfile.email;
-        const existingProfile = store.profiles.get(getProfileIdFromEmail(requestedEmail)) ?? null;
-        const profile = createProfileFromInput(body, existingProfile);
+        const validation = validateAuthPayload(body, "signup");
+
+        if (!validation.valid) {
+          sendJson(req, res, requestId, 400, {
+            error: "Validation failed",
+            details: validation.errors
+          });
+          return;
+        }
+
+        if (findProfileByEmail(store, validation.profile.email)) {
+          sendJson(req, res, requestId, 409, { error: "Email is already in use." });
+          return;
+        }
+
+        if (findProfileByUsername(store, validation.profile.username)) {
+          sendJson(req, res, requestId, 409, { error: "Username is already in use." });
+          return;
+        }
+
+        const timestamp = new Date().toISOString();
+        const profile = {
+          id: randomUUID(),
+          username: validation.profile.username,
+          email: validation.profile.email,
+          passwordHash: hashPassword(validation.password),
+          timezone: validation.profile.timezone,
+          createdAt: timestamp,
+          updatedAt: timestamp
+        };
 
         store.profiles.set(profile.id, profile);
 
         const token = randomUUID();
         store.sessions.set(token, profile.id);
         ensureReminderContext(store, profile);
-        recordAuditEvent(store, "session.demo_login", profile.id, {
+        recordAuditEvent(store, "session.signup", profile.id, {
           email: profile.email,
+          username: profile.username,
           timezone: profile.timezone
+        });
+
+        sendJson(req, res, requestId, 201, {
+          token,
+          profile: toPublicProfile(profile)
+        });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/auth/login") {
+        const body = await readJson(req);
+        const validation = validateAuthPayload(body, "login");
+
+        if (!validation.valid) {
+          sendJson(req, res, requestId, 400, {
+            error: "Validation failed",
+            details: validation.errors
+          });
+          return;
+        }
+
+        const profile = findProfileByEmail(store, validation.profile.email);
+
+        if (!profile || !verifyPassword(validation.password, profile.passwordHash)) {
+          sendJson(req, res, requestId, 401, { error: "Invalid email or password." });
+          return;
+        }
+
+        const token = randomUUID();
+        store.sessions.set(token, profile.id);
+        ensureReminderContext(store, profile);
+        recordAuditEvent(store, "session.login", profile.id, {
+          email: profile.email,
+          username: profile.username
         });
 
         sendJson(req, res, requestId, 200, {
           token,
-          profile
+          profile: toPublicProfile(profile)
         });
         return;
       }
@@ -338,7 +431,7 @@ export function createApp(options = {}) {
           return;
         }
 
-        sendJson(req, res, requestId, 200, { profile: session.profile });
+        sendJson(req, res, requestId, 200, { profile: toPublicProfile(session.profile) });
         return;
       }
 
@@ -352,19 +445,18 @@ export function createApp(options = {}) {
 
         const body = await readJson(req);
         const previousTimezone = session.profile.timezone;
-        const nextProfile = createProfileFromInput(body, session.profile);
+        const nextProfile = buildUpdatedProfile(body, session.profile);
+        const profileByEmail = findProfileByEmail(store, nextProfile.email);
+        const profileByUsername = findProfileByUsername(store, nextProfile.username);
 
-        if (
-          nextProfile.id !== session.profile.id &&
-          store.profiles.has(nextProfile.id)
-        ) {
+        if (profileByEmail && profileByEmail.id !== session.profile.id) {
           sendJson(req, res, requestId, 409, { error: "Email is already in use." });
           return;
         }
 
-        if (nextProfile.id !== session.profile.id) {
-          moveUserRecords(store, session.profile.id, nextProfile.id);
-          store.profiles.delete(session.profile.id);
+        if (profileByUsername && profileByUsername.id !== session.profile.id) {
+          sendJson(req, res, requestId, 409, { error: "Username is already in use." });
+          return;
         }
 
         store.profiles.set(nextProfile.id, nextProfile);
@@ -374,10 +466,22 @@ export function createApp(options = {}) {
         ensureReminderContext(store, nextProfile);
         recordAuditEvent(store, "profile.updated", nextProfile.id, {
           email: nextProfile.email,
+          username: nextProfile.username,
           timezone: nextProfile.timezone
         });
 
-        sendJson(req, res, requestId, 200, { profile: nextProfile });
+        sendJson(req, res, requestId, 200, { profile: toPublicProfile(nextProfile) });
+        return;
+      }
+
+      if (req.method === "POST" && url.pathname === "/api/auth/logout") {
+        const token = getTokenFromRequest(req);
+
+        if (token) {
+          store.sessions.delete(token);
+        }
+
+        sendJson(req, res, requestId, 204, {});
         return;
       }
 
@@ -632,7 +736,13 @@ export function createApp(options = {}) {
           return;
         }
 
-        sendJson(req, res, requestId, 200, buildHistoryResponse(store, session.profile, buildHistoryFilters(url)));
+        sendJson(
+          req,
+          res,
+          requestId,
+          200,
+          buildHistoryResponse(store, session.profile, buildHistoryFilters(url))
+        );
         return;
       }
 
