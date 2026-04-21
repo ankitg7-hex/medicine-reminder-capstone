@@ -1,8 +1,13 @@
-import test from "node:test";
 import assert from "node:assert/strict";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { createApp } from "../src/app.js";
+
+const tests = [];
+
+function test(name, fn) {
+  tests.push({ name, fn });
+}
 
 async function withServer(run, options = {}) {
   const server = createServer(createApp({ dbPath: ":memory:", ...options }));
@@ -464,3 +469,21 @@ test("medication plans are isolated by logged in user", async () => {
     assert.equal(secondListBody.medications.length, 0);
   });
 });
+
+let failures = 0;
+
+for (const entry of tests) {
+  try {
+    await entry.fn();
+    console.log(`ok - ${entry.name}`);
+  } catch (error) {
+    failures += 1;
+    console.error(`not ok - ${entry.name}`);
+    console.error(error);
+  }
+}
+
+if (failures > 0) {
+  console.error(`${failures} backend test(s) failed.`);
+  process.exitCode = 1;
+}
