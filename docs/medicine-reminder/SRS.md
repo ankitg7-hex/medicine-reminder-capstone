@@ -1,327 +1,390 @@
 # Software Requirements Specification
- 
+
 ## Document Purpose
- 
-This Software Requirements Specification defines the functional and non-functional requirements for the Medicine Reminder App MVP. It is intended to align product, design, frontend, backend, QA, and security expectations before implementation and release.
- 
+
+This Software Requirements Specification defines the current functional and non-functional requirements for the Medicine Reminder App as implemented and intended for continued hardening.
+
+This version supersedes the older demo-oriented planning assumptions. The current product includes persistent account-based authentication, SQLite-backed data storage, a tabbed dashboard, medication management, schedule generation, reminder processing, device registration, and audit activity.
+
 ## Product Overview
- 
-The Medicine Reminder App helps users manage medication schedules, receive reminders, track dose outcomes, and review adherence history in a simple and trustworthy experience.
- 
-The MVP is healthcare-adjacent, not diagnostic. The system must avoid providing treatment advice, dosage recommendations, or medical interpretations beyond user-authored medication records and reminder workflows.
- 
-## Goals
- 
-- Help users remember scheduled medication doses.
-- Reduce missed or forgotten doses through timely reminders.
-- Provide a clear daily schedule and dose history.
-- Support secure, user-scoped access to medication and reminder data.
-- Build a maintainable foundation for future enhancements such as caregiver support and richer notifications.
- 
-## In Scope For MVP
- 
-- User registration, login, logout, and profile management
-- Medication CRUD with archive support
-- Schedule definition using daily and selected-weekday recurrence
-- Dose generation for today and an upcoming rolling window
-- Daily schedule view with overdue and upcoming states
+
+The Medicine Reminder App helps authenticated users manage medication plans, review a daily schedule, track dose outcomes, and monitor reminder activity in a clean web interface.
+
+The application is healthcare-adjacent. It is not intended to diagnose, prescribe, or provide medical advice. Users manage their own medication records, reminders, and related account details.
+
+## Product Goals
+
+- Help users remember and act on scheduled medication doses.
+- Provide secure, user-scoped access to medication and reminder data.
+- Keep the daily medication plan easy to understand.
+- Allow users to review adherence history and reminder activity.
+- Persist account and medication data locally using SQLite for reliable local development and usage.
+
+## In Scope
+
+- User signup with username, email, password, and timezone
+- User login and logout
+- Session restoration for valid active token
+- Profile management for username, email, and timezone
+- Medication create, list, update, and archive
+- Schedule definition with daily and selected-weekday recurrence
+- Dose event generation for today and rolling window logic
+- Daily schedule board grouped by dose state
 - Dose actions: taken, missed, skipped
-- Medication and dose history
-- Reminder event tracking and reminder dispatch foundation
-- Basic dashboard summary cards
-- Baseline security controls, auditability, and test coverage
- 
-## Out Of Scope For MVP
- 
-- Medical advice, diagnosis, or interaction checking
-- Prescription OCR or barcode scanning
-- Insurance, payments, and pharmacy integrations
-- Advanced caregiver workflows
-- Rich analytics beyond basic summaries
-- Wearable integrations
-- Multi-tenant organization support
- 
-## Stakeholders And Users
- 
-### Primary Users
- 
-- Individuals managing recurring medicines
-- Family members assisting dependents or parents
- 
-### Internal Stakeholders
- 
-- Product owner
-- Engineering team
-- QA team
-- Security reviewer
- 
-## Assumptions
- 
-- The application will be delivered as a web-based system with a React frontend and REST backend.
-- MVP data access is user-scoped and requires authentication.
-- Reminder delivery may start with in-app or mock notification handling before production-grade push or SMS integrations.
-- All timestamps will be stored in UTC and presented in the user-selected timezone.
- 
-## System Context
- 
-The system consists of:
- 
-- A frontend web application for authentication, medication management, daily schedule, and history
-- A backend API handling authentication, profile, medication management, scheduling, dose actions, and reminder workflows
-- A relational database storing users, medications, schedules, dose events, reminder events, and session data
-- A background worker or scheduled process for reminder generation and dispatch
- 
-## User Classes And Permissions
- 
-### Authenticated User
- 
-- Can manage only their own profile
-- Can create, view, update, and archive only their own medications
-- Can view and act on only their own dose events and reminders
-- Can view only their own history and summary data
- 
+- Reminder event tracking and reminder processing
+- Device registration and reminder channel switching
+- Audit log timeline
+- Overview dashboard and tab-based navigation
+- SQLite-backed persistent storage for all core entities
+
+## Out Of Scope
+
+- Prescription verification or doctor workflow integration
+- Medication interaction checking
+- Insurance or pharmacy integration
+- Email verification
+- Password reset flow
+- Multi-user household sharing
+- Real push/SMS/email delivery integrations beyond the current internal reminder processing model
+- Native mobile apps
+
+## Users And Roles
+
+### Primary User
+
+- A signed-in individual managing their own medications and reminders
+
 ### Unauthenticated Visitor
- 
-- Can access only public health-check and authentication bootstrap endpoints
-- Cannot access profile, medication, schedule, history, or reminder data
- 
+
+- A visitor who can access signup and login only
+
+## Technology Context
+
+The current system consists of:
+
+- A React frontend
+- A Node.js backend
+- SQLite persistent storage
+- REST-style JSON API endpoints
+- Internal reminder processing logic
+
 ## Functional Requirements
- 
+
 ### FR-1 Authentication
- 
-- The system shall allow a user to register with email, password, full name, and timezone.
-- The system shall allow a user to log in with valid credentials.
-- The system shall allow a user to log out of the current session.
-- The system shall support session restoration for a valid active session.
-- The system shall prevent unauthenticated access to protected application features and APIs.
-- The system shall allow the user to update profile fields such as full name, email, and timezone.
- 
-### FR-2 Authorization
- 
-- The system shall derive authenticated identity from validated session or token context.
-- The system shall scope all medication, schedule, dose, history, and reminder queries to the authenticated user.
-- The system shall reject attempts to access or mutate resources owned by a different user.
- 
-### FR-3 Medication Management
- 
-- The system shall allow a user to create a medication plan with name, dosage, type, instructions, reason, start date, optional end date, recurrence type, reminder times, and weekdays if applicable.
-- The system shall allow a user to edit an existing medication plan.
-- The system shall allow a user to archive a medication plan instead of hard deletion.
+
+- The system shall allow a user to create an account with `username`, `email`, `password`, and `timezone`.
+- The system shall allow a user to sign in with valid `email` and `password`.
+- The system shall allow a user to sign out of the current session.
+- The system shall restore a valid session when a stored active token is present.
+- The system shall reject protected requests when the user is not authenticated.
+
+### FR-2 Profile Management
+
+- The system shall allow the authenticated user to view their own profile.
+- The system shall allow the authenticated user to update `username`, `email`, and `timezone`.
+- The system shall prevent duplicate username or email use across accounts.
+- The system shall keep the profile timezone available for schedule and reminder presentation.
+
+### FR-3 Authorization And Data Isolation
+
+- The system shall scope all protected data access to the authenticated user.
+- The system shall ensure a user can access only their own medications, schedules, doses, reminders, devices, and audit records.
+- The system shall return authorization failure for unauthenticated access attempts.
+
+### FR-4 Medication Management
+
+- The system shall allow the authenticated user to create a medication plan.
+- The system shall allow the authenticated user to update an existing medication plan.
+- The system shall allow the authenticated user to archive a medication plan.
 - The system shall list active medications by default.
-- The system may allow archived medications to be included through filtering.
- 
-### FR-4 Schedule Configuration
- 
-- The system shall support at least two recurrence types in MVP: `daily` and `selected weekdays`.
-- The system shall allow one or more reminder times per medication.
-- The system shall validate that at least one reminder time is present.
-- The system shall validate that end date is not earlier than start date.
-- The system shall validate that at least one weekday is selected when weekday recurrence is used.
- 
-### FR-5 Dose Event Generation
- 
-- The system shall generate dose events for eligible active medications.
-- The system shall generate today’s schedule on demand and may generate an upcoming rolling window for reminders.
-- The system shall avoid duplicate dose events for the same medication schedule and scheduled time.
-- The system shall stop generating dose events for archived or ended medication plans.
- 
-### FR-6 Daily Schedule
- 
-- The system shall show the authenticated user a daily list of dose events.
-- The system shall display dose states including upcoming, overdue, taken, missed, and skipped.
-- The system shall display medication name, dosage, schedule time, and relevant instructions for each scheduled dose.
-- The system shall provide empty-state messaging when no doses are scheduled.
- 
-### FR-7 Dose Actions
- 
-- The system shall allow the user to mark a dose as taken.
+- The system may support archived medication retrieval through filtered backend access.
+
+Medication data shall include:
+
+- name
+- type
+- dosage
+- instructions
+- reason
+- start date
+- optional end date
+- recurrence type
+- reminder times
+- weekdays when recurrence requires them
+
+### FR-5 Schedule Configuration
+
+- The system shall support `daily` recurrence.
+- The system shall support `selected-weekdays` recurrence.
+- The system shall allow one or more reminder times for a medication plan.
+- The system shall validate schedule input before persistence.
+
+Validation shall include:
+
+- medication name required
+- dosage required
+- valid start date required
+- valid end date when provided
+- end date not earlier than start date
+- at least one reminder time
+- valid weekday selection for weekday recurrence
+
+### FR-6 Dose Event Generation
+
+- The system shall generate dose events for active medication schedules belonging to the authenticated user.
+- The system shall avoid duplicate dose event generation for the same schedule slot.
+- The system shall stop generating new active dose events for archived medications.
+- The system shall use the user's timezone when computing today and upcoming schedule windows.
+
+### FR-7 Daily Schedule
+
+- The system shall present a daily schedule page for the authenticated user.
+- The schedule shall group dose events into:
+  - due now
+  - upcoming
+  - completed
+  - missed
+  - skipped
+- Each schedule entry shall show medication name, time, dosage, and available instructions.
+
+### FR-8 Dose Actions
+
+- The system shall allow the user to mark a dose as completed.
 - The system shall allow the user to mark a dose as missed.
 - The system shall allow the user to mark a dose as skipped.
-- The system shall record an action timestamp for each dose action.
-- The system shall persist dose status changes for history and reporting.
- 
-### FR-8 History And Dashboard
- 
-- The system shall present dose history to the authenticated user.
-- The system shall include status and action timestamp in history records.
-- The system shall provide summary counts for daily dose states such as upcoming, overdue, and taken.
-- The system should support filtering history by medication, status, and date range.
- 
-### FR-9 Reminder Processing
- 
-- The system shall maintain reminder records separately from dose status records.
-- The system shall track reminder delivery status such as queued, sent, delivered, and failed.
-- The system shall support a background process that identifies due reminder events.
-- The system shall support a pluggable notification adapter so reminder delivery channels can evolve without changing core scheduling logic.
- 
-### FR-10 Auditability
- 
-- The system shall retain dose action timestamps.
-- The system shall log authentication failures, authorization denials, and sensitive state changes.
-- The system shall preserve enough audit data to trace medication and dose workflow changes during support and testing.
- 
-## External Interface Requirements
- 
-### User Interface Requirements
- 
-- The UI shall support desktop and mobile-friendly layouts.
-- The UI shall use clear labels and accessible forms for medication and schedule entry.
-- The UI shall surface validation failures in understandable user-facing language.
-- The UI shall make primary actions such as sign in, save medication, and mark dose taken easy to find.
- 
-### API Requirements
- 
-- The backend shall expose REST endpoints for auth, profile, medications, schedule, doses, history, and reminder-related operations.
-- The backend shall return JSON request and response payloads.
-- The backend shall use a consistent error response shape for validation and authorization failures.
- 
-### Data Requirements
- 
-- The system shall store timestamps in UTC.
-- The system shall retain user timezone for presentation and scheduling boundaries.
-- The system shall soft-archive medication plans instead of permanently deleting active care records.
- 
-## Non-Functional Requirements
- 
-### NFR-1 Security
- 
-- The system shall hash passwords using a strong adaptive algorithm such as Argon2id or bcrypt.
-- The system shall protect authenticated routes using secure session or token validation.
-- The system shall use secure refresh-token or session management with expiry and revocation.
-- The system shall validate all request payloads before business logic execution.
-- The system shall use rate limiting on authentication-sensitive endpoints.
-- The system shall restrict CORS to approved frontend origins.
-- The system shall apply baseline browser security headers.
-- The system shall not expose stack traces or internal implementation details in production error responses.
- 
-### NFR-2 Privacy And Data Handling
- 
-- The system shall minimize stored personal data to what is required for reminder and profile workflows.
-- The system shall avoid storing unnecessary sensitive health content in MVP.
-- The system shall keep secrets outside source control.
- 
-### NFR-3 Reliability
- 
-- The system should continue to serve core CRUD and schedule APIs during reminder worker retries or transient notification failures.
-- The system shall avoid duplicate dose generation for the same schedule instance.
-- The system should support safe retry behavior for reminder dispatch.
- 
-### NFR-4 Performance
- 
-- Core dashboard and daily schedule views should load within acceptable interactive time for normal MVP dataset sizes.
-- Medication list, schedule, and history queries should return efficiently for a single user’s typical medication load.
- 
-### NFR-5 Usability And Accessibility
- 
-- The system shall support keyboard-accessible forms and controls.
-- The system shall present large readable schedule information and clear action labels.
-- The system shall work on common mobile and desktop viewport sizes.
- 
-### NFR-6 Maintainability
- 
-- The frontend and backend shall use shared contracts or clearly aligned DTOs.
-- Scheduling logic shall remain on the backend to avoid inconsistent duplicate logic.
-- The codebase shall include test coverage for critical auth, scheduling, and dose workflows.
- 
-## Data Entities
- 
-### User
- 
+- The system shall persist action timestamp and optional notes.
+- The system shall reflect the updated dose state in schedule and history views.
+
+### FR-9 History
+
+- The system shall provide a history view for previously acted-on doses.
+- The history view shall support filtering by medication.
+- The history view shall support filtering by outcome status.
+- The history view shall display summary counts for completed, missed, skipped, and total.
+
+### FR-10 Reminders
+
+- The system shall maintain reminder events separately from dose events.
+- The system shall track reminder status values including `queued`, `sent`, `delivered`, and `failed`.
+- The system shall allow reminder processing through a backend action.
+- The system shall support device registration and switch queued reminder channel behavior based on device availability.
+- The system shall allow stale reminders to contribute to missed-dose transitions according to backend rules.
+
+### FR-11 Device Registration
+
+- The system shall allow the authenticated user to register a device token.
+- The system shall store device name and platform metadata.
+- The system shall show registered devices in the reminder page.
+
+### FR-12 Activity Timeline
+
+- The system shall record significant account and domain actions in an audit timeline.
+- The system shall expose recent user-scoped activity to the authenticated user.
+- The system shall include events such as:
+  - signup
+  - login
+  - profile update
+  - medication create/update/archive
+  - dose update
+  - device registration
+  - reminder processing
+
+### FR-13 Navigation And Dashboard
+
+- The system shall show an Overview page by default after sign-in.
+- The system shall expose a top menu for feature pages.
+- The system shall render only the selected feature page when the user changes tabs.
+- The sign-out action shall be available at the right side of the top menu.
+
+## User Interface Requirements
+
+- The signed-out experience shall support both sign-in and sign-up forms.
+- The signed-in experience shall provide a clear top navigation menu.
+- The interface shall support desktop and mobile layouts.
+- The interface shall show meaningful empty states when no medication, reminder, or history data exists.
+- The interface shall avoid exposing technical implementation details such as internal endpoint lists in user-facing screens.
+
+## API Requirements
+
+The backend shall expose JSON APIs for:
+
+- health
+- auth signup
+- auth login
+- auth logout
+- profile read/update
+- medication CRUD
+- schedule retrieval
+- dose update
+- history retrieval
+- reminder retrieval and processing
+- device registration
+- audit log retrieval
+
+The backend shall:
+
+- return JSON responses
+- return consistent error messages for validation failures
+- return `401` for unauthenticated protected access
+- avoid leaking internal stack traces in normal error responses
+
+## Data Requirements
+
+### Persistent Storage
+
+- The system shall persist data in SQLite.
+- The local database file shall be kept outside version control.
+
+### Core Entities
+
+#### User Profile
+
 - id
-- full_name
+- username
 - email
 - password_hash
 - timezone
-- email_verified_at
-- last_login_at
-- failed_login_count
-- locked_until
 - created_at
 - updated_at
- 
-### Session
- 
-- id
+
+#### Session
+
+- token
 - user_id
-- refresh_token_hash
-- device_name
-- ip_address
-- user_agent
-- expires_at
-- revoked_at
 - created_at
- 
-### Medication
- 
+
+#### Medication
+
 - id
 - user_id
 - name
-- dosage
 - type
+- dosage
 - instructions
 - reason
 - start_date
 - end_date
-- recurrence_type
-- reminder_times
-- weekdays
 - status
 - created_at
 - updated_at
 - archived_at
- 
-### DoseEvent
- 
+
+#### Schedule
+
+- id
+- medication_id
+- user_id
+- recurrence_type
+- weekdays
+- times
+- active
+- created_at
+- updated_at
+
+#### Dose Event
+
 - id
 - user_id
 - medication_id
+- schedule_id
 - scheduled_at
-- scheduled_date
-- scheduled_time
 - status
 - action_taken_at
 - notes
- 
-### ReminderEvent
- 
+- history
+- source
+
+#### Reminder Event
+
 - id
+- user_id
 - dose_event_id
 - scheduled_send_at
-- sent_at
 - channel
 - status
 - provider_reference
- 
+- sent_at
+- delivered_at
+- failed_at
+- created_at
+- updated_at
+
+#### Device Registration
+
+- id
+- user_id
+- token
+- device_name
+- platform
+- created_at
+- last_seen_at
+
+#### Audit Log
+
+- id
+- type
+- user_id
+- details
+- recorded_at
+
 ## Business Rules
- 
-- A medication must have a name, dosage, start date, recurrence type, and at least one reminder time.
-- A medication with weekday recurrence must include at least one valid weekday.
-- End date cannot be earlier than start date.
-- Archived medications cannot generate new dose events.
-- Only the owner of a medication or dose event may read or update it.
-- Dose status and reminder delivery status must remain separate concerns.
- 
-## Constraints
- 
-- MVP recurrence support is intentionally limited to daily and selected weekdays.
-- Reminder channels may begin as in-app or mock implementations.
-- The product must avoid medical recommendation behavior.
- 
-## Acceptance Criteria Summary
- 
-- A user can register, log in, and access only their own data.
-- A user can create and edit medication plans with schedule details.
-- The system generates and displays today’s schedule from saved plans.
-- A user can mark doses as taken, missed, or skipped.
-- Dose outcomes appear in history and summary views.
-- Reminder processing is modeled cleanly enough to support worker-based dispatch.
-- Baseline security and validation controls are present for MVP release.
- 
-## Open Questions
- 
-- Will email verification be included in MVP or deferred?
-- Will password reset be included in MVP or deferred?
-- Which reminder channel is the initial production path: in-app only, email, SMS, or push?
-- What is the expected retention window for reminder and audit records?
- 
- 
+
+- Email addresses shall be normalized before account matching.
+- Usernames shall be unique.
+- Email addresses shall be unique.
+- Passwords shall be hashed before storage.
+- Archived medications shall not remain active for future schedule generation.
+- Reminder state and dose state shall remain separate concepts.
+- Dose actions shall be recorded only for the authenticated owner of the dose.
+
+## Non-Functional Requirements
+
+### NFR-1 Security
+
+- Passwords shall not be stored in plain text.
+- Protected routes shall validate bearer token session identity.
+- The system shall apply baseline browser security headers.
+- The system shall validate incoming request payloads.
+- The system should add auth rate limiting in a future hardening phase.
+
+### NFR-2 Reliability
+
+- Core data shall persist across backend restarts through SQLite storage.
+- Dose generation shall be idempotent for the same schedule and time slot.
+- Reminder processing shall not corrupt dose ownership or user boundaries.
+
+### NFR-3 Performance
+
+- The application should provide acceptable responsiveness for local single-user workloads and typical personal medication datasets.
+
+### NFR-4 Maintainability
+
+- Scheduling logic shall remain on the backend.
+- Auth, medication, schedule, history, and reminder flows shall remain separated by clear endpoint boundaries.
+- Critical flows shall be testable through backend integration tests and frontend type or UI checks.
+
+### NFR-5 Usability
+
+- Primary actions such as sign in, create account, save medication, and mark dose taken shall be easy to locate.
+- Overview shall act as the default dashboard page after sign-in.
+- Navigation labels shall be understandable to non-technical users.
+
+## Acceptance Summary
+
+The product satisfies the current release intent when:
+
+- A user can create an account and sign in later with the same credentials.
+- Account, medication, reminder, and history data persist through SQLite storage.
+- A user can manage only their own records.
+- A user can add medication plans and see generated daily schedule items.
+- A user can update dose outcomes and see them in history.
+- A user can register devices and review reminder activity.
+- The overview dashboard and tabbed feature navigation work as expected.
+
+## Known Gaps And Future Work
+
+- Password reset flow is not yet implemented.
+- Email verification is not yet implemented.
+- Rate limiting and stronger auth hardening are still recommended.
+- The current token storage approach in the frontend should be reviewed before public deployment.
+- External reminder delivery providers are not yet integrated.

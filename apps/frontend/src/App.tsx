@@ -2,7 +2,7 @@ import { FormEvent, useEffect, useState } from "react";
 
 type Profile = {
   id: string;
-  fullName: string;
+  username: string;
   email: string;
   timezone: string;
 };
@@ -165,7 +165,18 @@ type DeviceFormState = {
   platform: string;
 };
 
-const sessionStorageKey = "medicine-reminder-demo-token";
+type AuthMode = "login" | "signup";
+
+type DashboardTab =
+  | "overview"
+  | "medications"
+  | "reminders"
+  | "schedule"
+  | "history"
+  | "activity"
+  | "account";
+
+const sessionStorageKey = "medicine-reminder-session-token";
 
 const weekdayOptions = [
   { key: "mon", label: "Mon" },
@@ -388,8 +399,8 @@ function createEmptyAuditResponse(): AuditResponse {
 
 function createDefaultDeviceForm(): DeviceFormState {
   return {
-    token: "demo-device-token-001",
-    deviceName: "Ananya's Pixel",
+    token: "device-token-001",
+    deviceName: "Primary phone",
     platform: "android"
   };
 }
@@ -615,8 +626,10 @@ function summarizeAuditEntry(entry: AuditEntry) {
       return "Medication plan archived.";
     case "profile.updated":
       return "Profile settings updated.";
-    case "session.demo_login":
-      return "Demo session created.";
+    case "session.signup":
+      return "Account created successfully.";
+    case "session.login":
+      return "Signed in successfully.";
     default:
       return entry.type;
   }
@@ -625,6 +638,8 @@ function summarizeAuditEntry(entry: AuditEntry) {
 export function App() {
   const [token, setToken] = useState<string | null>(null);
   const [profile, setProfile] = useState<Profile | null>(null);
+  const [authMode, setAuthMode] = useState<AuthMode>("login");
+  const [activeTab, setActiveTab] = useState<DashboardTab>("overview");
   const [status, setStatus] = useState("Checking session...");
   const [error, setError] = useState<string | null>(null);
   const [workspaceError, setWorkspaceError] = useState<string | null>(null);
@@ -639,12 +654,17 @@ export function App() {
   });
   const [pendingDoseActionIds, setPendingDoseActionIds] = useState<string[]>([]);
   const [loginForm, setLoginForm] = useState({
-    fullName: "Ananya Rao",
     email: "ananya@example.com",
+    password: "password123"
+  });
+  const [signupForm, setSignupForm] = useState({
+    username: "ananya",
+    email: "ananya@example.com",
+    password: "password123",
     timezone: "Asia/Calcutta"
   });
   const [profileForm, setProfileForm] = useState({
-    fullName: "",
+    username: "",
     email: "",
     timezone: ""
   });
@@ -669,7 +689,7 @@ export function App() {
     const savedToken = window.localStorage.getItem(sessionStorageKey);
 
     if (!savedToken) {
-      setStatus("Sign in with a demo profile to simulate reminders and review release-readiness signals.");
+      setStatus("Sign in to manage your medicines, reminders, and daily schedule.");
       return;
     }
 
@@ -682,7 +702,7 @@ export function App() {
     }
 
     setProfileForm({
-      fullName: profile.fullName,
+      username: profile.username,
       email: profile.email,
       timezone: profile.timezone
     });
@@ -709,7 +729,7 @@ export function App() {
       window.localStorage.removeItem(sessionStorageKey);
       setToken(null);
       setProfile(null);
-      setStatus("Sign in with a demo profile to simulate reminders and review release-readiness signals.");
+      setStatus("Sign in to manage your medicines, reminders, and daily schedule.");
       setError(
         requestError instanceof Error
           ? requestError.message
@@ -760,7 +780,7 @@ export function App() {
       setError(null);
       setStatus("Signing you in...");
 
-      const response = await apiRequest<AuthPayload>("/api/auth/demo-login", {
+      const response = await apiRequest<AuthPayload>("/api/auth/login", {
         method: "POST",
         body: JSON.stringify(loginForm)
       });
@@ -770,8 +790,30 @@ export function App() {
       setProfile(response.profile);
       setStatus("Signed in");
     } catch (requestError) {
-      setError(requestError instanceof Error ? requestError.message : "Demo login failed.");
-      setStatus("Sign in with a demo profile to simulate reminders and review release-readiness signals.");
+      setError(requestError instanceof Error ? requestError.message : "Sign in failed.");
+      setStatus("Sign in to manage your medicines, reminders, and daily schedule.");
+    }
+  }
+
+  async function handleSignup(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+
+    try {
+      setError(null);
+      setStatus("Creating your account...");
+
+      const response = await apiRequest<AuthPayload>("/api/auth/signup", {
+        method: "POST",
+        body: JSON.stringify(signupForm)
+      });
+
+      window.localStorage.setItem(sessionStorageKey, response.token);
+      setToken(response.token);
+      setProfile(response.profile);
+      setStatus("Account created");
+    } catch (requestError) {
+      setError(requestError instanceof Error ? requestError.message : "Sign up failed.");
+      setStatus("Create an account to start managing your medicines and reminders.");
     }
   }
 
@@ -1105,9 +1147,14 @@ export function App() {
   }
 
   function handleLogout() {
+    if (token) {
+      void apiRequest("/api/auth/logout", { method: "POST" }, token).catch(() => undefined);
+    }
+
     window.localStorage.removeItem(sessionStorageKey);
     setToken(null);
     setProfile(null);
+    setActiveTab("overview");
     setMedications([]);
     setSchedule(null);
     setHistory(createEmptyHistory());
@@ -1124,7 +1171,8 @@ export function App() {
     setError(null);
     setWorkspaceError(null);
     setMedicationError(null);
-    setStatus("Sign in with a demo profile to simulate reminders and review release-readiness signals.");
+    setAuthMode("login");
+    setStatus("Sign in to manage your medicines, reminders, and daily schedule.");
   }
 
   return (
@@ -1135,17 +1183,17 @@ export function App() {
 
       <section className="hero">
         <div className="hero-copy">
-          <p className="eyebrow">Milestones 6 And 7</p>
-          <h1>Reminder Delivery, Release Guardrails, And Final MVP Polish</h1>
+          <p className="eyebrow">Daily Care Companion</p>
+          <h1>Stay On Track With Your Medicines And Daily Reminders</h1>
           <p className="subtitle">
-            Simulate reminder dispatch, register notification-capable devices, review audit
-            activity, and ship the MVP with safer defaults across the backend and UI.
+            Manage your medication schedule, keep your profile up to date, and stay organized
+            with timely reminders and a clear daily plan.
           </p>
         </div>
 
         <div className="hero-chip">
-          <span>Reminder worker</span>
-          <strong>Release ready</strong>
+          <span>Medication reminders</span>
+          <strong>Today's care plan</strong>
         </div>
       </section>
 
@@ -1171,62 +1219,162 @@ export function App() {
       {!profile ? (
         <section className="panel auth-panel">
           <div className="panel-header">
-            <h2>Demo Sign In</h2>
-            <span className="panel-badge">Protected flow</span>
+            <h2>{authMode === "login" ? "Sign In" : "Create Account"}</h2>
+            <span className="panel-badge">Secure access</span>
           </div>
 
-          <form className="form-grid" onSubmit={handleLogin}>
-            <label>
-              Full name
-              <input
-                name="fullName"
-                value={loginForm.fullName}
-                onChange={(event) =>
-                  setLoginForm((current) => ({
-                    ...current,
-                    fullName: event.target.value
-                  }))
-                }
-              />
-            </label>
-
-            <label>
-              Email
-              <input
-                name="email"
-                type="email"
-                value={loginForm.email}
-                onChange={(event) =>
-                  setLoginForm((current) => ({
-                    ...current,
-                    email: event.target.value
-                  }))
-                }
-              />
-            </label>
-
-            <label>
-              Timezone
-              <input
-                name="timezone"
-                value={loginForm.timezone}
-                onChange={(event) =>
-                  setLoginForm((current) => ({
-                    ...current,
-                    timezone: event.target.value
-                  }))
-                }
-              />
-            </label>
-
-            <button className="primary-button" type="submit">
-              Continue With Demo Profile
+          <div className="recurrence-switch" role="tablist" aria-label="Authentication mode">
+            <button
+              aria-selected={authMode === "login"}
+              className={authMode === "login" ? "chip-button active" : "chip-button"}
+              onClick={() => setAuthMode("login")}
+              type="button"
+            >
+              Sign In
             </button>
-          </form>
+            <button
+              aria-selected={authMode === "signup"}
+              className={authMode === "signup" ? "chip-button active" : "chip-button"}
+              onClick={() => setAuthMode("signup")}
+              type="button"
+            >
+              Sign Up
+            </button>
+          </div>
+
+          {authMode === "login" ? (
+            <form className="form-grid" onSubmit={handleLogin}>
+              <label>
+                Email
+                <input
+                  name="email"
+                  type="email"
+                  value={loginForm.email}
+                  onChange={(event) =>
+                    setLoginForm((current) => ({
+                      ...current,
+                      email: event.target.value
+                    }))
+                  }
+                />
+              </label>
+
+              <label>
+                Password
+                <input
+                  name="password"
+                  type="password"
+                  value={loginForm.password}
+                  onChange={(event) =>
+                    setLoginForm((current) => ({
+                      ...current,
+                      password: event.target.value
+                    }))
+                  }
+                />
+              </label>
+
+              <button className="primary-button" type="submit">
+                Sign In
+              </button>
+            </form>
+          ) : (
+            <form className="form-grid" onSubmit={handleSignup}>
+              <label>
+                Username
+                <input
+                  name="username"
+                  value={signupForm.username}
+                  onChange={(event) =>
+                    setSignupForm((current) => ({
+                      ...current,
+                      username: event.target.value
+                    }))
+                  }
+                />
+              </label>
+
+              <label>
+                Email
+                <input
+                  name="email"
+                  type="email"
+                  value={signupForm.email}
+                  onChange={(event) =>
+                    setSignupForm((current) => ({
+                      ...current,
+                      email: event.target.value
+                    }))
+                  }
+                />
+              </label>
+
+              <label>
+                Password
+                <input
+                  name="password"
+                  type="password"
+                  value={signupForm.password}
+                  onChange={(event) =>
+                    setSignupForm((current) => ({
+                      ...current,
+                      password: event.target.value
+                    }))
+                  }
+                />
+              </label>
+
+              <label>
+                Timezone
+                <input
+                  name="timezone"
+                  value={signupForm.timezone}
+                  onChange={(event) =>
+                    setSignupForm((current) => ({
+                      ...current,
+                      timezone: event.target.value
+                    }))
+                  }
+                />
+              </label>
+
+              <button className="primary-button" type="submit">
+                Create Account
+              </button>
+            </form>
+          )}
         </section>
       ) : (
         <>
-          <section className="status-grid" aria-label="Milestone summary">
+          <nav aria-label="Primary" className="feature-menu">
+            {[
+              { key: "overview", label: "Overview" },
+              { key: "medications", label: "Medications" },
+              { key: "reminders", label: "Reminders" },
+              { key: "schedule", label: "Schedule" },
+              { key: "history", label: "History" },
+              { key: "activity", label: "Activity" },
+              { key: "account", label: "Account Settings" }
+            ].map((item) => (
+              <button
+                aria-pressed={activeTab === item.key}
+                className={`menu-link${activeTab === item.key ? " active" : ""}`}
+                key={item.key}
+                onClick={() => setActiveTab(item.key as DashboardTab)}
+                type="button"
+              >
+                {item.label}
+              </button>
+            ))}
+            <div className="menu-spacer" />
+            <button className="menu-link menu-link-button" onClick={handleLogout} type="button">
+              Sign Out
+            </button>
+          </nav>
+
+          {activeTab === "overview" ? (
+            <>
+              <section className="status-grid" aria-label="Daily summary" id="overview">
             <article className="stat-card accent-card">
               <span className="stat-label">Due now</span>
               <strong className="stat-value">{schedule?.summary.dueNow ?? 0}</strong>
@@ -1244,16 +1392,80 @@ export function App() {
               <strong className="stat-value">{reminders.summary.failed}</strong>
             </article>
             <article className="stat-card">
-              <span className="stat-label">Audit entries</span>
+              <span className="stat-label">Activity updates</span>
               <strong className="stat-value">{auditTrail.entries.length}</strong>
             </article>
-          </section>
+              </section>
 
-          <section className="workspace-grid" id="workspace">
+              <section className="overview-grid">
+                <section className="panel">
+                  <div className="panel-header">
+                    <div>
+                      <h2>Today's Snapshot</h2>
+                      <p className="panel-copy">
+                        A quick view of what needs your attention today.
+                      </p>
+                    </div>
+                    <span className="panel-badge">{medications.length} medicines</span>
+                  </div>
+
+                  <section className="mini-stat-grid" aria-label="Overview details">
+                    <article className="mini-stat">
+                      <span>Upcoming doses</span>
+                      <strong>{schedule?.summary.upcoming ?? 0}</strong>
+                    </article>
+                    <article className="mini-stat">
+                      <span>Taken today</span>
+                      <strong>{schedule?.summary.completed ?? 0}</strong>
+                    </article>
+                    <article className="mini-stat">
+                      <span>Missed today</span>
+                      <strong>{schedule?.summary.missed ?? 0}</strong>
+                    </article>
+                    <article className="mini-stat">
+                      <span>Registered devices</span>
+                      <strong>{reminders.devices.length}</strong>
+                    </article>
+                  </section>
+                </section>
+
+                <section className="panel">
+                  <div className="panel-header">
+                    <div>
+                      <h2>Quick Actions</h2>
+                      <p className="panel-copy">
+                        Open a feature page to manage your medicines, reminders, or account.
+                      </p>
+                    </div>
+                  </div>
+
+                  <div className="button-row">
+                    <button className="secondary-button" onClick={() => setActiveTab("medications")} type="button">
+                      Manage Medications
+                    </button>
+                    <button className="secondary-button" onClick={() => setActiveTab("reminders")} type="button">
+                      Open Reminders
+                    </button>
+                    <button className="secondary-button" onClick={() => setActiveTab("schedule")} type="button">
+                      View Schedule
+                    </button>
+                    <button className="secondary-button" onClick={() => setActiveTab("account")} type="button">
+                      Account Settings
+                    </button>
+                  </div>
+                </section>
+              </section>
+            </>
+          ) : null}
+
+          {activeTab === "medications" || activeTab === "reminders" || activeTab === "account" ? (
+            <section className="workspace-grid" id="workspace">
+              {activeTab === "medications" ? (
             <section
               aria-busy={isWorkspaceLoading}
               aria-label="Medication setup"
               className="panel medication-panel"
+              id="medications"
             >
               <div className="panel-header">
                 <div>
@@ -1516,8 +1728,10 @@ export function App() {
                 </div>
               </form>
             </section>
+              ) : null}
 
             <section className="right-column">
+              {activeTab === "medications" ? (
               <section className="panel">
                 <div className="panel-header">
                   <div>
@@ -1561,13 +1775,15 @@ export function App() {
                   </ul>
                 )}
               </section>
+              ) : null}
 
-              <section className="panel reminder-panel">
+              {activeTab === "reminders" ? (
+              <section className="panel reminder-panel" id="reminders">
                 <div className="panel-header">
                   <div>
                     <h2>Reminder Center</h2>
                     <p className="panel-copy">
-                      Process queued reminders, track delivery state, and register mock devices.
+                      Process queued reminders, track delivery state, and register your devices.
                     </p>
                   </div>
                   <button
@@ -1602,7 +1818,7 @@ export function App() {
                 <div className="support-card">
                   <strong>{reminders.devices.length} device registrations</strong>
                   <p>
-                    Without a registered device, reminders fall back to mock in-app delivery.
+                    Without a registered device, reminders fall back to in-app delivery.
                     Items older than {reminders.policy.staleAfterMinutes} minutes can be auto-marked
                     missed by the worker.
                   </p>
@@ -1662,7 +1878,7 @@ export function App() {
                 {reminders.devices.length === 0 ? (
                   <div className="empty-state">
                     <strong>No device tokens registered</strong>
-                    <p>Register a mock device to switch future reminders from in-app to push.</p>
+                    <p>Register a device to switch future reminders from in-app to push.</p>
                   </div>
                 ) : (
                   <ul className="device-list">
@@ -1707,30 +1923,30 @@ export function App() {
                   </ul>
                 )}
               </section>
+              ) : null}
 
-              <section className="panel">
+              {activeTab === "account" ? (
+              <section className="panel" id="account">
                 <div className="panel-header">
                   <div>
                     <h2>Profile Settings</h2>
                     <p className="panel-copy">
-                      Timezone changes regenerate the dose and reminder windows.
+                      Keep your account details current so reminders stay accurate.
                     </p>
                   </div>
-                  <button className="secondary-button" onClick={handleLogout} type="button">
-                    Sign Out
-                  </button>
+                  <span className="panel-badge">Account</span>
                 </div>
 
                 <form className="form-grid" onSubmit={handleProfileSave}>
                   <label>
-                    Full name
+                    Username
                     <input
-                      name="fullName"
-                      value={profileForm.fullName}
+                      name="username"
+                      value={profileForm.username}
                       onChange={(event) =>
                         setProfileForm((current) => ({
                           ...current,
-                          fullName: event.target.value
+                          username: event.target.value
                         }))
                       }
                     />
@@ -1770,10 +1986,13 @@ export function App() {
                   </button>
                 </form>
               </section>
+              ) : null}
             </section>
           </section>
+          ) : null}
 
-          <section className="panel schedule-panel">
+          {activeTab === "schedule" ? (
+          <section className="panel schedule-panel" id="schedule">
             <div className="panel-header">
               <div>
                 <h2>Today's Schedule</h2>
@@ -1864,9 +2083,12 @@ export function App() {
               </div>
             )}
           </section>
+          ) : null}
 
+          {activeTab === "history" || activeTab === "activity" ? (
           <section className="insights-grid">
-            <section className="panel history-panel">
+            {activeTab === "history" ? (
+            <section className="panel history-panel" id="history">
               <div className="panel-header history-header">
                 <div>
                   <h2>Dose History</h2>
@@ -1976,24 +2198,25 @@ export function App() {
                 </div>
               )}
             </section>
+            ) : null}
 
-            <section className="panel audit-panel">
+            {activeTab === "activity" ? (
+            <section className="panel audit-panel" id="activity">
               <div className="panel-header">
                 <div>
-                  <h2>Release Readiness</h2>
+                  <h2>Activity Timeline</h2>
                   <p className="panel-copy">
-                    Audit activity, security defaults, and CI checks converge here for the final
-                    MVP pass.
+                    Review recent account and reminder activity in one place.
                   </p>
                 </div>
-                <span className="panel-badge">Milestone 7</span>
+                <span className="panel-badge">Recent updates</span>
               </div>
 
               <div className="support-card">
-                <strong>Checklist highlights</strong>
+                <strong>What you can review here</strong>
                 <p>
-                  Security headers, CORS allowlists, audit logging, reminder worker tests, and
-                  secret/dependency scan scripts are part of this release pass.
+                  Sign-ins, profile updates, medication changes, device registrations, and
+                  reminder processing updates appear in this timeline.
                 </p>
               </div>
 
@@ -2016,15 +2239,15 @@ export function App() {
                 </ul>
               )}
             </section>
+            ) : null}
           </section>
+          ) : null}
         </>
       )}
 
       <section className="footer-note">
-        <strong>Backend endpoints:</strong> `GET /api/medications`, `POST /api/medications`,
-        `PATCH/DELETE /api/medications/:id`, `GET /api/schedule/today`, `PATCH /api/doses/:id`,
-        `GET /api/history`, `GET /api/reminders/today`, `POST /api/reminders/process`,
-        `POST /api/devices/register`, `GET /api/audit-logs`
+        <strong>Tip:</strong> Keep your profile timezone current so medication times, reminders,
+        and today's schedule stay accurate wherever you are.
       </section>
     </main>
   );

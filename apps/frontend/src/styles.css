@@ -154,6 +154,56 @@ button:disabled {
   font-size: 1.35rem;
 }
 
+.feature-menu {
+  position: sticky;
+  top: 14px;
+  z-index: 10;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin-bottom: 22px;
+  padding: 12px;
+  border: 1px solid var(--line);
+  border-radius: 22px;
+  background: rgba(255, 255, 255, 0.82);
+  backdrop-filter: blur(14px);
+  box-shadow: var(--shadow);
+}
+
+.menu-link {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  min-height: 42px;
+  padding: 10px 14px;
+  border: 1px solid rgba(23, 50, 65, 0.08);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.9);
+  color: var(--ink);
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.menu-link.active {
+  border-color: rgba(23, 111, 125, 0.24);
+  background: var(--teal-soft);
+  color: #145b66;
+}
+
+.menu-link:hover {
+  background: #f3fbfa;
+}
+
+.menu-spacer {
+  flex: 1 1 auto;
+}
+
+.menu-link-button {
+  font: inherit;
+  background: #ffe9e4;
+  color: #8b3d2f;
+}
+
 .alert {
   margin: 0 0 14px;
   padding: 14px 16px;
@@ -174,6 +224,7 @@ button:disabled {
 }
 
 .status-grid,
+.overview-grid,
 .workspace-grid,
 .two-column-grid,
 .schedule-board,
@@ -186,6 +237,11 @@ button:disabled {
 
 .status-grid {
   grid-template-columns: repeat(auto-fit, minmax(180px, 1fr));
+  margin-bottom: 24px;
+}
+
+.overview-grid {
+  grid-template-columns: minmax(0, 1.2fr) minmax(320px, 0.8fr);
   margin-bottom: 24px;
 }
 
@@ -680,6 +736,7 @@ button:disabled {
 
 @media (max-width: 1180px) {
   .workspace-grid,
+  .overview-grid,
   .insights-grid {
     grid-template-columns: 1fr;
   }
@@ -726,5 +783,19 @@ button:disabled {
 
   .history-filters label {
     min-width: 100%;
+  }
+
+  .feature-menu {
+    top: 10px;
+    padding: 10px;
+  }
+
+  .menu-link,
+  .menu-link-button {
+    flex: 1 1 calc(50% - 10px);
+  }
+
+  .menu-spacer {
+    display: none;
   }
 }
